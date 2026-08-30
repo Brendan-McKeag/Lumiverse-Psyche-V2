@@ -3,7 +3,20 @@ type LlmMessage = import('lumiverse-spindle-types').LlmMessageDTO
 
 import { TOOL_SCHEMAS, executeTool } from '@psyche/core/tools'
 import { RunState } from '@psyche/core/state'
-import { updateSystemPrompt, updateUserContent, AGENT_SENTINEL } from '@psyche/core/prompts'
+import { updateSystemPrompt, updateUserContent, extractJson, AGENT_SENTINEL } from '@psyche/core/prompts'
+import { describeApproval } from '@psyche/core/approval'
+import {
+  castingSystemPrompt,
+  castingUserContent,
+  parseCasting,
+  salientFeelings,
+  unitSystemPrompt,
+  unitUserContent,
+  parseUnitResult,
+  mergeOffscreenResults,
+  applyOffscreenResult,
+  type OffscreenResult,
+} from '@psyche/core/offscreen'
 
 /* ------------------------------------------------------------------ *
  * Psyche (core fork) — the mind engine (plugin transport)
@@ -124,6 +137,112 @@ export async function runPsycheAgent(
   })
 
   return { rounds, toolCalls, finalNote }
+}
+
+/* --------------------- off-stage character simulation ----------------- *
+ * Two phases: a cheap "casting" call decides who acts solo vs. who shares a
+ * scene with whom; then one call PER GROUP (run in parallel), each given the
+ * full undiluted context for just its own members, actually writes what
+ * happened. Every call's request/response is accumulated and serialized into
+ * ONE combined trace, matching how the mind-update stage already serializes
+ * a multi-round tool loop into a single capture.
+ * ------------------------------------------------------------------ */
+
+interface CallLog {
+  label: string
+  request: string
+  response: string
+}
+
+async function quietJson(
+  system: string,
+  user: string,
+  opts: { forceNoReasoning: boolean; signal?: AbortSignal; userId?: string; connectionId?: string },
+): Promise<{ content: string; log: CallLog }> {
+  const messages: LlmMessage[] = [
+    { role: 'system', content: system },
+    { role: 'user', content: user },
+  ]
+  const res = (await spindle.generate.quiet({
+    type: 'quiet',
+    messages,
+    parameters: { temperature: 0.8 },
+    // Casting is mechanical allocation — force reasoning off for speed. The
+    // per-unit calls are where the real judgment happens, so their reasoning
+    // is left to the connection's own configured default, not forced off.
+    ...(opts.forceNoReasoning ? { reasoning: { source: 'off' as const } } : {}),
+    signal: opts.signal,
+    userId: opts.userId,
+    ...(opts.connectionId ? { connection_id: opts.connectionId } : {}),
+  })) as { content?: string }
+  const content = res.content ?? ''
+  return { content, log: { label: '', request: serializeMessages(messages), response: content } }
+}
+
+export async function runOffscreenStage(
+  run: RunState,
+  opts: {
+    eventBudget: number
+    signal?: AbortSignal
+    userId?: string
+    connectionId?: string
+    onTrace?: TraceFn
+  },
+): Promise<{ events: number; touched: number; groups: number } | null> {
+  const offStage = Object.values(run.characters).filter((c) => !c.present)
+  if (!offStage.length) return null
+  const onStageNames = Object.values(run.characters)
+    .filter((c) => c.present)
+    .map((c) => c.name)
+
+  const logs: CallLog[] = []
+
+  // ── phase 1: casting ──────────────────────────────────────────────
+  const roster = offStage.map((c) => ({
+    id: c.id,
+    name: c.name,
+    oneLineState: `${describeApproval(c.approval ?? 0).label} approval; feeling ${salientFeelings(c)}`,
+  }))
+  const castingCall = await quietJson(castingSystemPrompt(), castingUserContent(roster), {
+    forceNoReasoning: true,
+    signal: opts.signal,
+    userId: opts.userId,
+    connectionId: opts.connectionId,
+  })
+  logs.push({ ...castingCall.log, label: 'casting' })
+  const casting = parseCasting(extractJson(castingCall.content), offStage.map((c) => c.id))
+
+  // ── phase 2: one call per group, in parallel ────────────────────────
+  const unitResults = await Promise.all(
+    casting.groups.map(async (g): Promise<OffscreenResult | null> => {
+      const members = g.characterIds.map((id) => run.characters[id]).filter((c): c is NonNullable<typeof c> => Boolean(c))
+      if (!members.length) return null
+      try {
+        const call = await quietJson(
+          unitSystemPrompt(opts.eventBudget),
+          unitUserContent(members.map((c) => ({ c, feelings: salientFeelings(c) })), g.steer, onStageNames),
+          { forceNoReasoning: false, signal: opts.signal, userId: opts.userId, connectionId: opts.connectionId },
+        )
+        logs.push({ ...call.log, label: `unit:${g.characterIds.join('+')}` })
+        return parseUnitResult(extractJson(call.content), g.characterIds, opts.eventBudget)
+      } catch (err) {
+        logs.push({ label: `unit:${g.characterIds.join('+')}`, request: '(failed before response)', response: `Error: ${String(err)}` })
+        return null
+      }
+    }),
+  )
+
+  const merged = mergeOffscreenResults(unitResults.filter((r): r is OffscreenResult => r !== null))
+  const { touched, events } = applyOffscreenResult(run, merged, run.turnSeq)
+
+  opts.onTrace?.({
+    at: Date.now(),
+    request: logs.map((l) => `########## ${l.label} — REQUEST ##########\n${l.request}`).join('\n\n'),
+    response: logs.map((l) => `########## ${l.label} — RESPONSE ##########\n${l.response}`).join('\n\n'),
+    meta: `${casting.groups.length} group(s) · ${events} event(s) · ${touched.size} touched · connection: ${opts.connectionId || 'prose default'}`,
+  })
+
+  return { events, touched: touched.size, groups: casting.groups.length }
 }
 
 export { AGENT_SENTINEL }

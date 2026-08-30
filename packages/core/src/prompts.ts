@@ -20,6 +20,84 @@ export function emotionGlossary(): string {
   }).join('\n')
 }
 
+/* ------------------------- JSON extraction -------------------------- */
+/* Used by any stage that gets a direct JSON response rather than driving the
+ * tool-calling loop (currently: the offscreen simulation stage). */
+
+export function extractJson(text: string): unknown {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  const raw = fenced ? fenced[1] : text
+  const start = raw.indexOf('{')
+  if (start === -1) return null
+
+  const end = raw.lastIndexOf('}')
+  if (end > start) {
+    try {
+      return JSON.parse(raw.slice(start, end + 1))
+    } catch {
+      /* fall through to salvage */
+    }
+  }
+  // A local model that hits its output limit truncates mid-string, and the
+  // whole stage's work is then thrown away over a missing brace. Salvaging a
+  // partial object recovers the fields that did arrive, which for a per-
+  // character JSON contract is usually most of them.
+  return salvageJson(raw.slice(start))
+}
+
+/**
+ * Parse JSON that was cut off in flight: close whatever string and structures
+ * were still open, discarding any dangling key with no value.
+ */
+export function salvageJson(s: string): unknown {
+  /** What is still open at the end of a fragment. */
+  const scan = (str: string) => {
+    let inString = false
+    let escaped = false
+    const stack: string[] = []
+    for (const ch of str) {
+      if (inString) {
+        if (escaped) escaped = false
+        else if (ch === '\\') escaped = true
+        else if (ch === '"') inString = false
+        continue
+      }
+      if (ch === '"') inString = true
+      else if (ch === '{') stack.push('}')
+      else if (ch === '[') stack.push(']')
+      else if (ch === '}' || ch === ']') stack.pop()
+    }
+    return { inString, stack }
+  }
+
+  // Nothing left open means this was not a truncation, and repairing it would
+  // be guessing at a different problem.
+  if (!scan(s).stack.length) return null
+
+  let body = s
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const { inString, stack } = scan(body)
+    if (!stack.length) break
+    const candidate =
+      `${(inString ? `${body}"` : body).replace(/[\s,]*$/, '').replace(/:\s*$/, ': null')}` +
+      stack.slice().reverse().join('')
+    try {
+      return JSON.parse(candidate)
+    } catch {
+      // Rewind past the fragment that was still being written — the last
+      // quoted run — then drop any container it had just opened, so a
+      // half-started element does not survive as an empty object.
+      const lastQuote = body.lastIndexOf('"', body.length - 2)
+      if (lastQuote <= 0) break
+      body = body
+        .slice(0, lastQuote)
+        .replace(/[\s,]*$/, '')
+        .replace(/,?\s*[[{]\s*$/, '')
+    }
+  }
+  return null
+}
+
 /* ----------------------- post-turn update -------------------------- */
 
 export function updateSystemPrompt(directive: string, includeRubrics = true): string {
@@ -81,6 +159,10 @@ export function updateSystemPrompt(directive: string, includeRubrics = true): st
     '    genuine wishes, lost when they cut against them. Small honest increments',
     '    (±1-3 typical); it is a ledger built over many turns, not a mood, and',
     '    unlike feelings it never decays.',
+    '  • When something happens that a character would specifically remember or',
+    '    could later act on (a promise, a threat, something told to them in',
+    '    confidence, a plan made), note_knowledge it for them — this is what lets',
+    '    them act sensibly off-stage later. Do not log routine scene description.',
     '  • Occasionally nudge a baseline (set_baseline) when a lasting change of',
     '    temperament is earned — not every turn.',
     '',

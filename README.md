@@ -36,11 +36,23 @@ top of.
   character *behaves the way they feel*. Disabled at rest: turn the
   extension off and nothing is injected.
 
-- **A single mind-update pass.** After each reply, one LLM tool-calling
-  pass reads the transcript and nudges feelings (`apply_stimulus`,
-  occasionally `set_emotion`/`set_baseline`) and approval
-  (`adjust_approval`) for every present character, and can introduce
-  supporting characters the story brings in.
+- **A mind-update pass.** After each reply, one LLM tool-calling pass reads
+  the transcript and nudges feelings (`apply_stimulus`, occasionally
+  `set_emotion`/`set_baseline`) and approval (`adjust_approval`) for every
+  present character, can introduce supporting characters the story brings
+  in, and can log something a character will specifically remember
+  (`note_knowledge`).
+
+- **Every named character stays alive off-stage.** Each turn, every tracked
+  character who isn't on-stage with the player still does something —
+  a solitary beat, or a scene shared with another off-stage character —
+  via a two-phase simulation: a cheap "casting" call decides who's alone and
+  who's together, then one richly-contexted call per group actually writes
+  what happened and moves their emotions/approval. A character only ever
+  acts on what's in their own `knowledge` log or current state — never the
+  on-stage transcript — so they only know what they've witnessed or been
+  told. On by default, toggleable and budget-tunable in settings — it favors
+  depth (a dedicated call per character/group) over minimizing call count.
 
 ## Architecture
 
@@ -48,8 +60,8 @@ A Bun workspace with two parts:
 
 | part | role |
 |------|------|
-| `packages/core` (`@psyche/core`) | pure logic, no host API, no network: the 40-emotion schema + saturation math (`affect.ts`), run-state types (`state.ts`), the approval ledger (`approval.ts`), the per-emotion behavioral rubrics (`rubrics.ts`), the live state→behavior directive renderer (`directive.ts`), the agent tool schemas + executors (`tools.ts`), and the mind-update stage prompt (`prompts.ts`). |
-| `src/` (the plugin) | Lumiverse wiring: generation hooks, storage, the world-info injection interceptor, and the frontend drawer. |
+| `packages/core` (`@psyche/core`) | pure logic, no host API, no network: the 40-emotion schema + saturation math (`affect.ts`), run-state types (`state.ts`), the approval ledger (`approval.ts`), the per-emotion behavioral rubrics (`rubrics.ts`), the live state→behavior directive renderer (`directive.ts`), the agent tool schemas + executors (`tools.ts`), the mind-update stage prompt (`prompts.ts`), and the off-stage simulation stage (`offscreen.ts`). |
+| `src/` (the plugin) | Lumiverse wiring: generation hooks, storage, the world-info injection interceptor, and the frontend drawer. `runAgentForChat` in `backend.ts` runs two fail-soft stages per turn — mind-update, then off-stage simulation — each with its own debug trace and settings toggle, so future stages (a pacing "director," milestone-triggered character-card evolution) can slot in the same way. |
 
 Plugin state is keyed by `chatId` under the extension's scoped storage
 (`runs/<chatId>.json`).
@@ -68,6 +80,8 @@ rebuild before publishing.
 ## Settings
 
 In the **Psyche** drawer tab: enable/disable, human texture (energy-matched
-replies), engine rounds per turn, decay rate, an optional engine directive
-(tone steering), reroll/reset run, per-character presence toggle, and direct
-editing of every emotion value + approval.
+replies), off-stage simulation (on/off + event budget), engine rounds per
+turn, decay rate, an optional engine directive (tone steering), reset run,
+per-character presence toggle, and direct editing of every emotion value +
+approval. The debug tab shows the raw request/response for each turn's mind
+update, off-stage simulation, and injected directive.

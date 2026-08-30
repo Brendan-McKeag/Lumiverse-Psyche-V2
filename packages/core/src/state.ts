@@ -1,5 +1,8 @@
 import { neutralVector } from './affect'
 
+/** Max entries kept in a character's `knowledge` log; oldest dropped first. */
+export const KNOWLEDGE_CAP = 20
+
 /* ------------------------------------------------------------------ *
  * Psyche (core) — run state (per chat)
  *
@@ -30,6 +33,30 @@ export interface CharacterState {
    * guardedness, pushback, refusal.
    */
   approval?: number
+  /**
+   * What this character personally knows — things they witnessed, were told,
+   * or noted themselves. Capped short-term log, oldest dropped. This is the
+   * ONLY source the off-stage simulation stage may read for a character's
+   * context — never the on-stage transcript — so "only knows what they
+   * witnessed" is true by construction.
+   */
+  knowledge?: string[]
+  /** One-line continuity: what they've been up to since last seen on-stage. */
+  offscreenSummary?: string
+  /**
+   * RunState.turnSeq value at which this character was last run through the
+   * off-stage simulation stage — the pacing signal for "how much has
+   * accumulated since we last checked on them," used instead of a fictional
+   * clock.
+   */
+  offscreenAtTurn?: number
+  /**
+   * Wall-clock ms of the last off-stage simulation touch — secondary/debug
+   * signal only, and a floor-guard against re-firing within the same burst
+   * of regenerates/swipes. Must NEVER be surfaced to the model as an
+   * in-fiction time claim.
+   */
+  lastOffscreenAt?: number
   updatedAt: number
 }
 
@@ -39,6 +66,10 @@ export interface RunState {
   characterId: string | null
   /** characters in this run, keyed by slug */
   characters: Record<string, CharacterState>
+  /** Advances once per completed turn (not per stage) — the shared "how long
+   * has it been" counter the offscreen stage's pacing uses instead of a
+   * fictional in-fiction clock. */
+  turnSeq: number
   createdAt: number
   updatedAt: number
 }
@@ -49,6 +80,7 @@ export function emptyRun(chatId: string): RunState {
     chatId,
     characterId: null,
     characters: {},
+    turnSeq: 0,
     createdAt: now,
     updatedAt: now,
   }
@@ -62,6 +94,7 @@ export function newCharacter(id: string, name: string, isPrimary: boolean): Char
     present: isPrimary,
     emotions: neutralVector(),
     approval: 0,
+    knowledge: [],
     updatedAt: Date.now(),
   }
 }
@@ -71,6 +104,16 @@ export function backfillEmotions(c: CharacterState) {
   const nv = neutralVector()
   for (const k of Object.keys(nv)) if (!c.emotions[k]) c.emotions[k] = nv[k]
   c.approval ??= 0 // de-facto per-character migration hook; older runs predate approval
+  c.knowledge ??= []
+}
+
+/** Append a knowledge entry, capped to KNOWLEDGE_CAP, oldest dropped first.
+ *  The single mutation point both the note_knowledge tool and the offscreen
+ *  stage's apply function use, so cap logic lives in exactly one place. */
+export function pushKnowledge(c: CharacterState, entry: string) {
+  const e = entry.trim()
+  if (!e) return
+  c.knowledge = [...(c.knowledge ?? []), e].slice(-KNOWLEDGE_CAP)
 }
 
 /**

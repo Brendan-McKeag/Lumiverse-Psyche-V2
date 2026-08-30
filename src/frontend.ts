@@ -24,6 +24,8 @@ interface Character {
   present: boolean
   approval: number
   approvalLabel: string
+  offscreenSummary: string
+  knowledge: string[]
   emotions: Emotion[]
 }
 interface Snapshot {
@@ -100,6 +102,10 @@ export function setup(ctx: SpindleFrontendContext) {
           <span class="ps-val ps-appr-band"></span>
         </div>
 
+        <div class="ps-off-summary ps-muted" style="display:none"></div>
+        <h4 class="ps-h ps-off-h" style="display:none">Knows <span class="ps-muted">— what they've witnessed/been told (most recent last)</span></h4>
+        <div class="ps-off-knowledge ps-muted"></div>
+
         <h4 class="ps-h">Affect</h4>
         <div class="ps-emos"></div>
       </div>
@@ -116,6 +122,8 @@ export function setup(ctx: SpindleFrontendContext) {
         <h4 class="ps-h">Settings</h4>
         <label class="ps-row"><input type="checkbox" class="ps-en" /> Enabled</label>
         <label class="ps-row"><input type="checkbox" class="ps-texture" /> Human texture (energy-matched replies — flat moods read flat)</label>
+        <label class="ps-row"><input type="checkbox" class="ps-offscreen" /> Off-stage simulation (absent characters live their own lives — costs extra LLM calls per turn)</label>
+        <div><span class="ps-muted">Off-stage event budget (events per group per turn)</span><input type="number" class="ps-input ps-offbudget" min="1" max="8" /></div>
         <div><span class="ps-muted">Engine rounds per turn</span><input type="number" class="ps-input ps-rounds" min="1" max="20" /></div>
         <div><span class="ps-muted">Decay rate (0–1, relax toward baseline)</span><input type="number" class="ps-input ps-decay" min="0" max="1" step="0.01" /></div>
         <div><span class="ps-muted">Engine directive (optional)</span><textarea class="ps-ta ps-dir" placeholder="e.g. Slow-burn; keep characters guarded until trust is earned."></textarea></div>
@@ -127,6 +135,7 @@ export function setup(ctx: SpindleFrontendContext) {
         <h4 class="ps-h">Debug — what the last update sent</h4>
         <div class="ps-row">
           <button class="ps-btn ps-dbg" data-k="update">Mind update</button>
+          <button class="ps-btn ps-dbg" data-k="offscreen">Off-stage sim</button>
           <button class="ps-btn ps-dbg" data-k="injection">→ Injected directive</button>
           <button class="ps-btn ps-dbg-refresh" title="Re-fetch latest">↻</button>
         </div>
@@ -147,9 +156,14 @@ export function setup(ctx: SpindleFrontendContext) {
   const apprFillEl = q<HTMLElement>('.ps-appr-fill')
   const apprValEl = q<HTMLInputElement>('.ps-appr-val')
   const apprBandEl = q<HTMLElement>('.ps-appr-band')
+  const offSummaryEl = q<HTMLElement>('.ps-off-summary')
+  const offHEl = q<HTMLElement>('.ps-off-h')
+  const offKnowledgeEl = q<HTMLElement>('.ps-off-knowledge')
   const activity = q<HTMLElement>('.ps-activity')
   const enEl = q<HTMLInputElement>('.ps-en')
   const textureEl = q<HTMLInputElement>('.ps-texture')
+  const offscreenEl = q<HTMLInputElement>('.ps-offscreen')
+  const offBudgetEl = q<HTMLInputElement>('.ps-offbudget')
   const roundsEl = q<HTMLInputElement>('.ps-rounds')
   const decayEl = q<HTMLInputElement>('.ps-decay')
   const dirEl = q<HTMLTextAreaElement>('.ps-dir')
@@ -240,6 +254,18 @@ export function setup(ctx: SpindleFrontendContext) {
     apprBandEl.textContent = c.approvalLabel ?? ''
     apprBandEl.title = c.approvalLabel ?? ''
 
+    if (c.offscreenSummary?.trim()) {
+      offSummaryEl.textContent = `Since you last saw them: ${c.offscreenSummary}`
+      offSummaryEl.style.display = 'block'
+    } else {
+      offSummaryEl.style.display = 'none'
+    }
+    const knowledge = c.knowledge ?? []
+    offHEl.style.display = knowledge.length ? 'block' : 'none'
+    offKnowledgeEl.innerHTML = knowledge.length
+      ? knowledge.map((k) => `<div>• ${esc(k)}</div>`).join('')
+      : ''
+
     // bipolar axes first, then unipolar in a STABLE canonical order so the
     // editable fields don't reshuffle under the cursor as values change.
     const bip = c.emotions.filter((e) => e.kind === 'bipolar')
@@ -303,7 +329,7 @@ export function setup(ctx: SpindleFrontendContext) {
       dbgOut.textContent = inj?.directive || 'No directive captured yet — take a turn.'
       return
     }
-    const t = debugData?.[dbgKey]
+    const t = debugData?.stages?.[dbgKey]
     if (!t) {
       dbgMeta.textContent = 'no capture yet'
       dbgOut.textContent = `No ${dbgKey} capture yet — take a turn.`
@@ -381,6 +407,8 @@ export function setup(ctx: SpindleFrontendContext) {
         directive: dirEl.value,
         agentConnectionId: connEl.value,
         humanTexture: textureEl.checked,
+        offscreenEnabled: offscreenEl.checked,
+        offscreenEventBudget: Number(offBudgetEl.value),
       },
     })
   })
@@ -396,7 +424,12 @@ export function setup(ctx: SpindleFrontendContext) {
         break
       }
       case 'state_changed': {
-        activity.textContent = `Last turn: ${p.edits} edits over ${p.rounds} rounds${p.note ? ` — ${p.note}` : ''}`
+        const failed = Array.isArray(p.stageErrors) ? p.stageErrors : []
+        const warn = failed.length ? `⚠ ${failed.map((f: { stage: string }) => f.stage).join(', ')} failed — ` : ''
+        activity.textContent =
+          `${warn}Last turn: ${p.edits} edits over ${p.rounds} rounds` +
+          `${p.offscreenNote ? ` · offstage: ${p.offscreenNote}` : ''}${p.note ? ` — ${p.note}` : ''}`
+        activity.style.color = failed.length ? '#e5534b' : ''
         requestState()
         requestDebug()
         break
@@ -415,6 +448,8 @@ export function setup(ctx: SpindleFrontendContext) {
         const c = p.config ?? {}
         enEl.checked = c.enabled !== false
         textureEl.checked = c.humanTexture !== false
+        offscreenEl.checked = c.offscreenEnabled !== false
+        offBudgetEl.value = String(c.offscreenEventBudget ?? 3)
         roundsEl.value = String(c.maxRounds ?? 8)
         decayEl.value = String(c.decayRate ?? 0.12)
         dirEl.value = c.directive ?? ''

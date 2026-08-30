@@ -64,6 +64,10 @@ function setup(ctx) {
           <span class="ps-val ps-appr-band"></span>
         </div>
 
+        <div class="ps-off-summary ps-muted" style="display:none"></div>
+        <h4 class="ps-h ps-off-h" style="display:none">Knows <span class="ps-muted">— what they've witnessed/been told (most recent last)</span></h4>
+        <div class="ps-off-knowledge ps-muted"></div>
+
         <h4 class="ps-h">Affect</h4>
         <div class="ps-emos"></div>
       </div>
@@ -80,6 +84,8 @@ function setup(ctx) {
         <h4 class="ps-h">Settings</h4>
         <label class="ps-row"><input type="checkbox" class="ps-en" /> Enabled</label>
         <label class="ps-row"><input type="checkbox" class="ps-texture" /> Human texture (energy-matched replies — flat moods read flat)</label>
+        <label class="ps-row"><input type="checkbox" class="ps-offscreen" /> Off-stage simulation (absent characters live their own lives — costs extra LLM calls per turn)</label>
+        <div><span class="ps-muted">Off-stage event budget (events per group per turn)</span><input type="number" class="ps-input ps-offbudget" min="1" max="8" /></div>
         <div><span class="ps-muted">Engine rounds per turn</span><input type="number" class="ps-input ps-rounds" min="1" max="20" /></div>
         <div><span class="ps-muted">Decay rate (0–1, relax toward baseline)</span><input type="number" class="ps-input ps-decay" min="0" max="1" step="0.01" /></div>
         <div><span class="ps-muted">Engine directive (optional)</span><textarea class="ps-ta ps-dir" placeholder="e.g. Slow-burn; keep characters guarded until trust is earned."></textarea></div>
@@ -91,6 +97,7 @@ function setup(ctx) {
         <h4 class="ps-h">Debug — what the last update sent</h4>
         <div class="ps-row">
           <button class="ps-btn ps-dbg" data-k="update">Mind update</button>
+          <button class="ps-btn ps-dbg" data-k="offscreen">Off-stage sim</button>
           <button class="ps-btn ps-dbg" data-k="injection">→ Injected directive</button>
           <button class="ps-btn ps-dbg-refresh" title="Re-fetch latest">↻</button>
         </div>
@@ -110,9 +117,14 @@ function setup(ctx) {
   const apprFillEl = q(".ps-appr-fill");
   const apprValEl = q(".ps-appr-val");
   const apprBandEl = q(".ps-appr-band");
+  const offSummaryEl = q(".ps-off-summary");
+  const offHEl = q(".ps-off-h");
+  const offKnowledgeEl = q(".ps-off-knowledge");
   const activity = q(".ps-activity");
   const enEl = q(".ps-en");
   const textureEl = q(".ps-texture");
+  const offscreenEl = q(".ps-offscreen");
+  const offBudgetEl = q(".ps-offbudget");
   const roundsEl = q(".ps-rounds");
   const decayEl = q(".ps-decay");
   const dirEl = q(".ps-dir");
@@ -173,6 +185,15 @@ function setup(ctx) {
     apprValEl.title = `exact value ${Math.round(appr)}; bar saturates at ±1000, full scale ±10000`;
     apprBandEl.textContent = c.approvalLabel ?? "";
     apprBandEl.title = c.approvalLabel ?? "";
+    if (c.offscreenSummary?.trim()) {
+      offSummaryEl.textContent = `Since you last saw them: ${c.offscreenSummary}`;
+      offSummaryEl.style.display = "block";
+    } else {
+      offSummaryEl.style.display = "none";
+    }
+    const knowledge = c.knowledge ?? [];
+    offHEl.style.display = knowledge.length ? "block" : "none";
+    offKnowledgeEl.innerHTML = knowledge.length ? knowledge.map((k) => `<div>• ${esc(k)}</div>`).join("") : "";
     const bip = c.emotions.filter((e) => e.kind === "bipolar");
     const uni = c.emotions.filter((e) => e.kind === "unipolar");
     emosEl.innerHTML = [...bip, ...uni].map(emotionRow).join("");
@@ -226,7 +247,7 @@ function setup(ctx) {
       dbgOut.textContent = inj?.directive || "No directive captured yet — take a turn.";
       return;
     }
-    const t = debugData?.[dbgKey];
+    const t = debugData?.stages?.[dbgKey];
     if (!t) {
       dbgMeta.textContent = "no capture yet";
       dbgOut.textContent = `No ${dbgKey} capture yet — take a turn.`;
@@ -302,7 +323,9 @@ ${t.response}`;
         decayRate: Number(decayEl.value),
         directive: dirEl.value,
         agentConnectionId: connEl.value,
-        humanTexture: textureEl.checked
+        humanTexture: textureEl.checked,
+        offscreenEnabled: offscreenEl.checked,
+        offscreenEventBudget: Number(offBudgetEl.value)
       }
     });
   });
@@ -319,7 +342,10 @@ ${t.response}`;
         break;
       }
       case "state_changed": {
-        activity.textContent = `Last turn: ${p.edits} edits over ${p.rounds} rounds${p.note ? ` — ${p.note}` : ""}`;
+        const failed = Array.isArray(p.stageErrors) ? p.stageErrors : [];
+        const warn = failed.length ? `⚠ ${failed.map((f) => f.stage).join(", ")} failed — ` : "";
+        activity.textContent = `${warn}Last turn: ${p.edits} edits over ${p.rounds} rounds` + `${p.offscreenNote ? ` · offstage: ${p.offscreenNote}` : ""}${p.note ? ` — ${p.note}` : ""}`;
+        activity.style.color = failed.length ? "#e5534b" : "";
         requestState();
         requestDebug();
         break;
@@ -339,6 +365,8 @@ ${t.response}`;
         const c = p.config ?? {};
         enEl.checked = c.enabled !== false;
         textureEl.checked = c.humanTexture !== false;
+        offscreenEl.checked = c.offscreenEnabled !== false;
+        offBudgetEl.value = String(c.offscreenEventBudget ?? 3);
         roundsEl.value = String(c.maxRounds ?? 8);
         decayEl.value = String(c.decayRate ?? 0.12);
         dirEl.value = c.directive ?? "";

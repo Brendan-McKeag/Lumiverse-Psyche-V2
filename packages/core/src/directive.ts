@@ -226,6 +226,7 @@ function characterBlock(c: CharacterState, humanTexture = true): string {
   lines.push(`  ${approvalLine(c)}`)
   lines.push(`  investment in the scene: ${investmentRegister(c)}`)
   if (humanTexture) for (const d of deliveryRegister(c)) lines.push(`  delivery: ${d}`)
+  if (c.offscreenSummary?.trim()) lines.push(`  since you last saw them: ${c.offscreenSummary.trim()}`)
 
   return lines.join('\n')
 }

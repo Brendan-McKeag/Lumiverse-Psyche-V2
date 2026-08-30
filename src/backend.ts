@@ -14,8 +14,9 @@ import {
   APPROVAL_MIN,
   APPROVAL_MAX,
 } from './run'
-import { runPsycheAgent, StageTrace } from './agent'
+import { runPsycheAgent, runOffscreenStage, StageTrace } from './agent'
 import { EMOTIONS, EMOTION_BY_KEY, describeValue, relaxToward } from '@psyche/core/affect'
+import { OFFSCREEN_EVENT_BUDGET } from '@psyche/core/offscreen'
 
 /* ------------------------------------------------------------------ *
  * Psyche (core fork) — backend
@@ -38,6 +39,10 @@ interface Config {
   agentConnectionId: string
   /** gate for the energy-matched delivery lines + ENERGY preamble (human texture) */
   humanTexture: boolean
+  /** run the off-stage character simulation stage each turn */
+  offscreenEnabled: boolean
+  /** max off-stage events simulated per group per turn (narrative pacing knob) */
+  offscreenEventBudget: number
 }
 
 const DEFAULT_CONFIG: Config = {
@@ -48,6 +53,8 @@ const DEFAULT_CONFIG: Config = {
   agentTimeoutMs: 90000,
   agentConnectionId: '',
   humanTexture: true,
+  offscreenEnabled: true,
+  offscreenEventBudget: OFFSCREEN_EVENT_BUDGET,
 }
 const CONFIG_PATH = 'config.json'
 
@@ -68,6 +75,7 @@ async function saveConfig() {
 }
 async function loadRun(chatId: string): Promise<RunState> {
   const run = await spindle.storage.getJson<RunState>(runPath(chatId), { fallback: emptyRun(chatId) })
+  run.turnSeq ??= 0
   for (const c of Object.values(run.characters)) backfillEmotions(c)
   return run
 }
@@ -78,7 +86,7 @@ async function saveRun(run: RunState) {
 
 /* ----------------------------- debug ------------------------------- */
 interface DebugBundle {
-  update?: StageTrace
+  stages?: Record<string, StageTrace>
   injection?: { at: number; directive: string }
 }
 const debugPath = (chatId: string) => `debug/${chatId}.json`
@@ -195,10 +203,12 @@ async function runAgentForChat(chatId: string, reply: string, userId?: string) {
   const char = await characterForChat(chatId, userId)
   if (!char) return
 
-  const dbg: DebugBundle = {}
+  const dbg: DebugBundle = { stages: {} }
+  const stageErrors: { stage: string; error: string }[] = []
   try {
     const run = await loadRun(chatId)
     ensurePrimary(run, char.id, char.name)
+    run.turnSeq = (run.turnSeq ?? 0) + 1
     relaxPresent(run, config.decayRate)
 
     const fullChar = await spindle.characters.get(char.id, userId).catch(() => null)
@@ -206,6 +216,7 @@ async function runAgentForChat(chatId: string, reply: string, userId?: string) {
     const agentConn = await resolveQuietConnection(config.agentConnectionId, userId)
     const transcript = await buildTranscript(chatId, reply)
 
+    // ── stage 1: mind update (on-stage characters) ─────────────────────
     let result = { rounds: 0, toolCalls: [] as { tool: string; result: string }[], finalNote: '' }
     try {
       result = await runPsycheAgent(run, transcript, cardContext, {
@@ -214,12 +225,35 @@ async function runAgentForChat(chatId: string, reply: string, userId?: string) {
         signal: AbortSignal.timeout(config.agentTimeoutMs),
         userId,
         connectionId: agentConn,
-        onTrace: (t) => (dbg.update = capTrace(t)),
+        onTrace: (t) => (dbg.stages!.update = capTrace(t)),
       })
     } catch (err) {
       const m = err instanceof Error && err.name === 'AbortError' ? 'timed out' : String(err)
       result.finalNote = `update failed (${m})`
+      stageErrors.push({ stage: 'update', error: m })
       spindle.log.error(`[psyche] update pass failed — ${m}`)
+    }
+
+    // ── stage 2: off-stage character simulation ─────────────────────────
+    // Reads run.characters AFTER stage 1, since stage 1 may have created,
+    // deleted, or moved characters' present/off-scene status.
+    let offscreenNote = ''
+    if (config.offscreenEnabled) {
+      try {
+        const off = await runOffscreenStage(run, {
+          eventBudget: config.offscreenEventBudget,
+          signal: AbortSignal.timeout(config.agentTimeoutMs),
+          userId,
+          connectionId: agentConn,
+          onTrace: (t) => (dbg.stages!.offscreen = capTrace(t)),
+        })
+        offscreenNote = off ? `${off.groups} group(s), ${off.events} event(s), ${off.touched} touched` : 'no one off-stage'
+      } catch (err) {
+        const m = err instanceof Error && err.name === 'AbortError' ? 'timed out' : String(err)
+        offscreenNote = `offscreen failed (${m})`
+        stageErrors.push({ stage: 'offscreen', error: m })
+        spindle.log.error(`[psyche] offscreen pass failed — ${m}`)
+      }
     }
 
     await saveRun(run)
@@ -234,7 +268,11 @@ async function runAgentForChat(chatId: string, reply: string, userId?: string) {
     }
     try {
       const prev = await loadDebug(chatId)
-      await spindle.storage.setJson(debugPath(chatId), { ...prev, ...dbg })
+      await spindle.storage.setJson(debugPath(chatId), {
+        ...prev,
+        ...dbg,
+        stages: { ...prev.stages, ...dbg.stages },
+      })
     } catch (err) {
       spindle.log.warn(`[psyche] could not save debug traces: ${String(err)}`)
     }
@@ -246,9 +284,14 @@ async function runAgentForChat(chatId: string, reply: string, userId?: string) {
       rounds: result.rounds,
       edits: result.toolCalls.length,
       note: result.finalNote,
+      offscreenNote,
+      stageErrors,
     })
 
-    spindle.log.info(`[psyche] ${char.name}: ${result.toolCalls.length} edits / ${result.rounds} rounds`)
+    spindle.log.info(
+      `[psyche] ${char.name}: ${result.toolCalls.length} edits / ${result.rounds} rounds` +
+        (offscreenNote ? ` · offstage: ${offscreenNote}` : ''),
+    )
   } catch (err) {
     const msg = err instanceof Error && err.name === 'AbortError' ? 'engine timed out' : String(err)
     spindle.log.error(`[psyche] engine failed: ${msg}`)
@@ -410,6 +453,8 @@ function snapshotRun(run: RunState) {
     present: c.present,
     approval: c.approval ?? 0,
     approvalLabel: describeApproval(c.approval ?? 0).label,
+    offscreenSummary: c.offscreenSummary ?? '',
+    knowledge: c.knowledge ?? [],
     emotions: EMOTIONS.map((def) => {
       const e = c.emotions[def.key] ?? { value: 0, baseline: 0 }
       return {
@@ -465,6 +510,8 @@ spindle.onFrontendMessage(async (payload: any, userId) => {
             ? config.agentConnectionId
             : String(payload.config.agentConnectionId ?? ''),
         humanTexture: Boolean(payload.config?.humanTexture ?? config.humanTexture),
+        offscreenEnabled: Boolean(payload.config?.offscreenEnabled ?? config.offscreenEnabled),
+        offscreenEventBudget: clampInt(payload.config?.offscreenEventBudget ?? config.offscreenEventBudget, 1, 8),
       }
       await saveConfig()
       spindle.sendToFrontend({ type: 'config', config }, userId)

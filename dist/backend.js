@@ -180,12 +180,14 @@ function neutralVector() {
 }
 
 // packages/core/src/state.ts
+var KNOWLEDGE_CAP = 20;
 function emptyRun(chatId) {
   const now = Date.now();
   return {
     chatId,
     characterId: null,
     characters: {},
+    turnSeq: 0,
     createdAt: now,
     updatedAt: now
   };
@@ -198,6 +200,7 @@ function newCharacter(id, name, isPrimary) {
     present: isPrimary,
     emotions: neutralVector(),
     approval: 0,
+    knowledge: [],
     updatedAt: Date.now()
   };
 }
@@ -207,6 +210,13 @@ function backfillEmotions(c) {
     if (!c.emotions[k])
       c.emotions[k] = nv[k];
   c.approval ??= 0;
+  c.knowledge ??= [];
+}
+function pushKnowledge(c, entry) {
+  const e = entry.trim();
+  if (!e)
+    return;
+  c.knowledge = [...c.knowledge ?? [], e].slice(-KNOWLEDGE_CAP);
 }
 function ensurePrimary(run, id, name) {
   run.characterId = id;
@@ -709,6 +719,8 @@ function characterBlock(c, humanTexture = true) {
   if (humanTexture)
     for (const d of deliveryRegister(c))
       lines.push(`  delivery: ${d}`);
+  if (c.offscreenSummary?.trim())
+    lines.push(`  since you last saw them: ${c.offscreenSummary.trim()}`);
   return lines.join(`
 `);
 }
@@ -916,6 +928,19 @@ var TOOL_SCHEMAS = [
       required: ["character_id", "delta"],
       additionalProperties: false
     }
+  },
+  {
+    name: "note_knowledge",
+    description: 'Log one short fact THIS character now personally knows \u2014 something they witnessed, were directly told, or noticed themselves this turn. This feeds what they can reason from later when they act off-stage; do not log anything they did not actually perceive. Keep it to one plain sentence, their own frame of reference (e.g. "the player promised to meet me at the docks tonight", not a scene summary).',
+    parameters: {
+      type: "object",
+      properties: {
+        character_id: { type: "string" },
+        text: { type: "string", description: "One short first-person-relevant fact, plain sentence." }
+      },
+      required: ["character_id", "text"],
+      additionalProperties: false
+    }
   }
 ];
 function find(run, id) {
@@ -1058,6 +1083,17 @@ ${feelings}`
       c.updatedAt = Date.now();
       return `${c.id} approval: ${before} -> ${after} (${describeApproval(after).label}).`;
     }
+    case "note_knowledge": {
+      const c = find(run, str(args, "character_id"));
+      if (!c)
+        return `No character "${str(args, "character_id")}".`;
+      const text = str(args, "text").trim();
+      if (!text)
+        return "note_knowledge requires text.";
+      pushKnowledge(c, text);
+      c.updatedAt = Date.now();
+      return `${c.id} now knows: "${text}"`;
+    }
     default:
       return `Unknown tool ${name}.`;
   }
@@ -1065,6 +1101,65 @@ ${feelings}`
 
 // packages/core/src/prompts.ts
 var AGENT_SENTINEL = "<<psyche_engine>>";
+function extractJson(text) {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const raw = fenced ? fenced[1] : text;
+  const start = raw.indexOf("{");
+  if (start === -1)
+    return null;
+  const end = raw.lastIndexOf("}");
+  if (end > start) {
+    try {
+      return JSON.parse(raw.slice(start, end + 1));
+    } catch {}
+  }
+  return salvageJson(raw.slice(start));
+}
+function salvageJson(s) {
+  const scan = (str2) => {
+    let inString = false;
+    let escaped = false;
+    const stack = [];
+    for (const ch of str2) {
+      if (inString) {
+        if (escaped)
+          escaped = false;
+        else if (ch === "\\")
+          escaped = true;
+        else if (ch === '"')
+          inString = false;
+        continue;
+      }
+      if (ch === '"')
+        inString = true;
+      else if (ch === "{")
+        stack.push("}");
+      else if (ch === "[")
+        stack.push("]");
+      else if (ch === "}" || ch === "]")
+        stack.pop();
+    }
+    return { inString, stack };
+  };
+  if (!scan(s).stack.length)
+    return null;
+  let body = s;
+  for (let attempt = 0;attempt < 6; attempt++) {
+    const { inString, stack } = scan(body);
+    if (!stack.length)
+      break;
+    const candidate = `${(inString ? `${body}"` : body).replace(/[\s,]*$/, "").replace(/:\s*$/, ": null")}` + stack.slice().reverse().join("");
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      const lastQuote = body.lastIndexOf('"', body.length - 2);
+      if (lastQuote <= 0)
+        break;
+      body = body.slice(0, lastQuote).replace(/[\s,]*$/, "").replace(/,?\s*[[{]\s*$/, "");
+    }
+  }
+  return null;
+}
 function updateSystemPrompt(directive2, includeRubrics = true) {
   return [
     AGENT_SENTINEL,
@@ -1124,6 +1219,10 @@ function updateSystemPrompt(directive2, includeRubrics = true) {
     "    genuine wishes, lost when they cut against them. Small honest increments",
     "    (\xB11-3 typical); it is a ledger built over many turns, not a mood, and",
     "    unlike feelings it never decays.",
+    "  \u2022 When something happens that a character would specifically remember or",
+    "    could later act on (a promise, a threat, something told to them in",
+    "    confidence, a plan made), note_knowledge it for them \u2014 this is what lets",
+    "    them act sensibly off-stage later. Do not log routine scene description.",
     "  \u2022 Occasionally nudge a baseline (set_baseline) when a lasting change of",
     "    temperament is earned \u2014 not every turn.",
     "",
@@ -1201,6 +1300,254 @@ function updateUserContent(run, transcript, cardContext) {
     "approval changes, but not about tracking \u2014 every named character gets an entry."
   ].filter(Boolean).join(`
 `);
+}
+
+// packages/core/src/offscreen.ts
+var OFFSCREEN_EVENT_BUDGET = 3;
+var OFFSCREEN_FEELING_CLAMP = 5;
+var OFFSCREEN_APPROVAL_CLAMP = 5;
+var KNOWLEDGE_CONTEXT_LINES = 8;
+var SALIENT_THRESHOLD = 0.35;
+function salientFeelings(c) {
+  const rows = EMOTIONS.filter((def) => def.kind === "unipolar").map((def) => ({ def, value: c.emotions[def.key]?.value ?? 0 })).filter((r) => r.value >= SALIENT_THRESHOLD).sort((a, b) => b.value - a.value).slice(0, 4);
+  if (!rows.length)
+    return "quiet, even-keeled";
+  return rows.map((r) => `${r.def.label.toLowerCase().split(" (")[0]} (${describeValue(r.def, r.value).label})`).join(", ");
+}
+function castingSystemPrompt() {
+  return [
+    AGENT_SENTINEL,
+    "You are casting this turn's off-stage activity. The player is on stage with",
+    "someone else; these characters are elsewhere. You do not write what happens \u2014",
+    "you only decide the SHAPE of it: who is alone, and who plausibly crosses paths",
+    "with whom.",
+    "",
+    "Assign every character listed below to exactly one group. A group of one is a",
+    "solitary character. A group of two or more means they are together this turn \u2014",
+    "only group characters who could plausibly be in the same place, given who they",
+    "are and how they currently feel; do not force an encounter that makes no sense.",
+    "Most turns, most characters are alone \u2014 that is normal and correct.",
+    "",
+    'For any group of 2+, add a one-line "steer": the FLAVOR of the interaction (e.g.',
+    '"catching up over a drink", "an old disagreement resurfaces", "working together',
+    'on something practical") \u2014 never its content, dialogue, or outcome. That gets',
+    "written later, by someone else, with more room to think it through.",
+    "",
+    'Return ONLY JSON: { "groups": [ { "characterIds": ["<id>", ...], "steer": "<optional, only for 2+>" } ] }'
+  ].join(`
+`);
+}
+function castingUserContent(roster) {
+  return [
+    "OFF-STAGE RIGHT NOW:",
+    ...roster.map((r) => `  ${r.id} \u2014 ${r.name}: ${r.oneLineState}`),
+    "",
+    "Cast this turn. Return only the JSON."
+  ].join(`
+`);
+}
+function parseCasting(raw, offStageIds) {
+  const known = new Set(offStageIds);
+  const assigned = new Set;
+  const groups = [];
+  const o = raw;
+  const rawGroups = Array.isArray(o?.groups) ? o.groups : [];
+  for (const g of rawGroups) {
+    const go = g;
+    const ids = Array.isArray(go.characterIds) ? go.characterIds.filter((x) => typeof x === "string" && known.has(x) && !assigned.has(x)) : [];
+    if (!ids.length)
+      continue;
+    for (const id of ids)
+      assigned.add(id);
+    const steer = typeof go.steer === "string" && go.steer.trim() ? go.steer.trim().slice(0, 200) : undefined;
+    groups.push(ids.length > 1 ? { characterIds: ids, steer } : { characterIds: ids });
+  }
+  for (const id of offStageIds) {
+    if (!assigned.has(id))
+      groups.push({ characterIds: [id] });
+  }
+  return { groups };
+}
+function unitSystemPrompt(eventBudget) {
+  return [
+    AGENT_SENTINEL,
+    "You are running the rest of the world for one small slice of it. The character(s)",
+    "below are off-stage right now, living their own lives. Work out what they did.",
+    "",
+    "Most of the time, very little is worth reporting \u2014 an empty events list is a",
+    "completely correct answer for a quiet character. Only report something when it is",
+    "the kind of beat their own current feelings and situation would actually produce.",
+    `At most ${eventBudget} event(s) total in this response.`,
+    "",
+    "If there is more than one character below, they are TOGETHER right now \u2014 write ONE",
+    "event with all of them as participants, and give each of them their OWN",
+    "knowledgeFor line: the same moment as each of them would describe it, which is",
+    "rarely identical. Someone not listed below was not there and knows nothing of it.",
+    "",
+    "NONE OF THIS REACHES THE PLAYER DIRECTLY. It becomes private knowledge. The player",
+    "finds out only if a character later chooses to tell them, or a future turn notices",
+    "they would plausibly know. So: do not resolve the story's plot, do not have anyone",
+    "discover what the player is doing on stage, and do not write anything happening in",
+    'the on-stage location \u2014 treat the "ON-STAGE RIGHT NOW" names below as off-limits,',
+    "not participants.",
+    "",
+    "APPROVAL. Only include an approval delta for a character whose action or reflection",
+    "here is EXPLICITLY about the player \u2014 something they already know involving the",
+    'player (check their "knows" list below first). Never invent an opinion of the',
+    "player out of an unrelated solitary scene. Most characters get no approval delta",
+    "most turns. Keep deltas small \u2014 this is private reflection, not a scene with the",
+    "player.",
+    "",
+    "Return ONLY JSON:",
+    "{",
+    '  "events": [',
+    '    { "description": "one plain past-tense sentence",',
+    '      "participants": ["<id>", ...],',
+    '      "knowledgeFor": { "<id>": "their own first-person-relevant line" } }',
+    "  ],",
+    '  "feelings": [ { "characterId": "<id>", "emotion": "<emotion key>", "intensity": 0.0, "reason": "why" } ],',
+    '  "approvals": [ { "characterId": "<id>", "delta": 0, "reason": "why, tied to something they know about the player" } ],',
+    `  "summaries": { "<id>": "one line: what they've been up to" }`,
+    "}",
+    "",
+    "Feelings move gently \u2014 intensity roughly \xB10.5 to \xB12 unless something real and",
+    "specific happened to them. Only use the character ids you were given."
+  ].join(`
+`);
+}
+function unitUserContent(members, steer, onStageNames) {
+  return [
+    `ON-STAGE RIGHT NOW (off-limits \u2014 do not write anything happening there, they cannot`,
+    `know what's said or done there unless told afterward): ${onStageNames.length ? onStageNames.join(", ") : "(nobody)"}`,
+    "",
+    steer ? `TOGETHER THIS TURN \u2014 ${steer}` : "",
+    "",
+    ...members.map(({ c, feelings }) => [
+      `### ${c.id} \u2014 ${c.name}`,
+      `  ${approvalLine(c)}`,
+      `  feeling: ${feelings}`,
+      `  recently up to: ${c.offscreenSummary?.trim() || "(nothing notable yet)"}`,
+      `  knows: ${(c.knowledge ?? []).slice(-KNOWLEDGE_CONTEXT_LINES).join("; ") || "(nothing notable)"}`
+    ].join(`
+`)),
+    "",
+    "What happened? Return only the JSON."
+  ].filter((l) => l !== "").join(`
+`);
+}
+function parseUnitResult(raw, memberIds, eventBudget) {
+  const known = new Set(memberIds);
+  const o = raw;
+  const events = [];
+  const rawEvents = Array.isArray(o?.events) ? o.events : [];
+  const eventCountFor = new Map;
+  for (const e of rawEvents) {
+    const eo = e;
+    const description = typeof eo.description === "string" ? eo.description.trim().slice(0, 300) : "";
+    const participants = Array.isArray(eo.participants) ? eo.participants.filter((x) => typeof x === "string" && known.has(x)) : [];
+    const knowledgeForRaw = eo.knowledgeFor && typeof eo.knowledgeFor === "object" ? eo.knowledgeFor : {};
+    const knowledgeFor = {};
+    for (const [id, text] of Object.entries(knowledgeForRaw)) {
+      if (!known.has(id) || typeof text !== "string" || !text.trim())
+        continue;
+      const used = eventCountFor.get(id) ?? 0;
+      if (used >= eventBudget)
+        continue;
+      knowledgeFor[id] = text.trim().slice(0, 300);
+      eventCountFor.set(id, used + 1);
+    }
+    if (!description || !participants.length || !Object.keys(knowledgeFor).length)
+      continue;
+    events.push({ description, participants, knowledgeFor });
+  }
+  const feelings = [];
+  const rawFeelings = Array.isArray(o?.feelings) ? o.feelings : [];
+  for (const f of rawFeelings) {
+    const fo = f;
+    const characterId = typeof fo.characterId === "string" ? fo.characterId : "";
+    const emotion = typeof fo.emotion === "string" ? fo.emotion : "";
+    const intensity = typeof fo.intensity === "number" && Number.isFinite(fo.intensity) ? fo.intensity : 0;
+    if (!known.has(characterId) || !EMOTION_BY_KEY[emotion] || intensity === 0)
+      continue;
+    const clamped = Math.max(-OFFSCREEN_FEELING_CLAMP, Math.min(OFFSCREEN_FEELING_CLAMP, intensity));
+    feelings.push({ characterId, emotion, intensity: clamped, reason: typeof fo.reason === "string" ? fo.reason.slice(0, 200) : "" });
+  }
+  const approvals = [];
+  const rawApprovals = Array.isArray(o?.approvals) ? o.approvals : [];
+  const eventParticipants = new Set(events.flatMap((e) => e.participants));
+  for (const a of rawApprovals) {
+    const ao = a;
+    const characterId = typeof ao.characterId === "string" ? ao.characterId : "";
+    const delta = typeof ao.delta === "number" && Number.isFinite(ao.delta) ? Math.round(ao.delta) : 0;
+    if (!known.has(characterId) || delta === 0 || !eventParticipants.has(characterId))
+      continue;
+    const clamped = Math.max(-OFFSCREEN_APPROVAL_CLAMP, Math.min(OFFSCREEN_APPROVAL_CLAMP, delta));
+    approvals.push({ characterId, delta: clamped, reason: typeof ao.reason === "string" ? ao.reason.slice(0, 200) : "" });
+  }
+  const summaries = {};
+  const rawSummaries = o?.summaries && typeof o.summaries === "object" ? o.summaries : {};
+  for (const [id, text] of Object.entries(rawSummaries)) {
+    if (!known.has(id) || typeof text !== "string" || !text.trim())
+      continue;
+    summaries[id] = text.trim().slice(0, 250);
+  }
+  return { events, feelings, approvals, summaries };
+}
+function mergeOffscreenResults(results) {
+  const merged = { events: [], feelings: [], approvals: [], summaries: {} };
+  for (const r of results) {
+    merged.events.push(...r.events);
+    merged.feelings.push(...r.feelings);
+    merged.approvals.push(...r.approvals);
+    Object.assign(merged.summaries, r.summaries);
+  }
+  return merged;
+}
+function applyOffscreenResult(run, result, turnSeq) {
+  const touched = new Set;
+  for (const e of result.events) {
+    for (const [id, line] of Object.entries(e.knowledgeFor)) {
+      const c = run.characters[id];
+      if (!c)
+        continue;
+      pushKnowledge(c, line);
+      touched.add(id);
+    }
+  }
+  for (const f of result.feelings) {
+    const c = run.characters[f.characterId];
+    const def = EMOTION_BY_KEY[f.emotion];
+    const e = c?.emotions[f.emotion];
+    if (!c || !def || !e)
+      continue;
+    e.value = applyStimulus(def, e.value, f.intensity);
+    touched.add(f.characterId);
+  }
+  for (const a of result.approvals) {
+    const c = run.characters[a.characterId];
+    if (!c)
+      continue;
+    const before = c.approval ?? 0;
+    c.approval = Math.max(APPROVAL_MIN, Math.min(APPROVAL_MAX, before + a.delta));
+    touched.add(a.characterId);
+  }
+  for (const [id, summary] of Object.entries(result.summaries)) {
+    const c = run.characters[id];
+    if (!c)
+      continue;
+    c.offscreenSummary = summary;
+    touched.add(id);
+  }
+  const now = Date.now();
+  for (const id of touched) {
+    const c = run.characters[id];
+    if (!c)
+      continue;
+    c.updatedAt = now;
+    c.offscreenAtTurn = turnSeq;
+    c.lastOffscreenAt = now;
+  }
+  return { touched, events: result.events.length };
 }
 
 // src/agent.ts
@@ -1284,6 +1631,71 @@ tool calls (${toolCalls.length}):
   });
   return { rounds, toolCalls, finalNote };
 }
+async function quietJson(system, user, opts) {
+  const messages = [
+    { role: "system", content: system },
+    { role: "user", content: user }
+  ];
+  const res = await spindle.generate.quiet({
+    type: "quiet",
+    messages,
+    parameters: { temperature: 0.8 },
+    ...opts.forceNoReasoning ? { reasoning: { source: "off" } } : {},
+    signal: opts.signal,
+    userId: opts.userId,
+    ...opts.connectionId ? { connection_id: opts.connectionId } : {}
+  });
+  const content = res.content ?? "";
+  return { content, log: { label: "", request: serializeMessages(messages), response: content } };
+}
+async function runOffscreenStage(run, opts) {
+  const offStage = Object.values(run.characters).filter((c) => !c.present);
+  if (!offStage.length)
+    return null;
+  const onStageNames = Object.values(run.characters).filter((c) => c.present).map((c) => c.name);
+  const logs = [];
+  const roster = offStage.map((c) => ({
+    id: c.id,
+    name: c.name,
+    oneLineState: `${describeApproval(c.approval ?? 0).label} approval; feeling ${salientFeelings(c)}`
+  }));
+  const castingCall = await quietJson(castingSystemPrompt(), castingUserContent(roster), {
+    forceNoReasoning: true,
+    signal: opts.signal,
+    userId: opts.userId,
+    connectionId: opts.connectionId
+  });
+  logs.push({ ...castingCall.log, label: "casting" });
+  const casting = parseCasting(extractJson(castingCall.content), offStage.map((c) => c.id));
+  const unitResults = await Promise.all(casting.groups.map(async (g) => {
+    const members = g.characterIds.map((id) => run.characters[id]).filter((c) => Boolean(c));
+    if (!members.length)
+      return null;
+    try {
+      const call = await quietJson(unitSystemPrompt(opts.eventBudget), unitUserContent(members.map((c) => ({ c, feelings: salientFeelings(c) })), g.steer, onStageNames), { forceNoReasoning: false, signal: opts.signal, userId: opts.userId, connectionId: opts.connectionId });
+      logs.push({ ...call.log, label: `unit:${g.characterIds.join("+")}` });
+      return parseUnitResult(extractJson(call.content), g.characterIds, opts.eventBudget);
+    } catch (err) {
+      logs.push({ label: `unit:${g.characterIds.join("+")}`, request: "(failed before response)", response: `Error: ${String(err)}` });
+      return null;
+    }
+  }));
+  const merged = mergeOffscreenResults(unitResults.filter((r) => r !== null));
+  const { touched, events } = applyOffscreenResult(run, merged, run.turnSeq);
+  opts.onTrace?.({
+    at: Date.now(),
+    request: logs.map((l) => `########## ${l.label} \u2014 REQUEST ##########
+${l.request}`).join(`
+
+`),
+    response: logs.map((l) => `########## ${l.label} \u2014 RESPONSE ##########
+${l.response}`).join(`
+
+`),
+    meta: `${casting.groups.length} group(s) \xB7 ${events} event(s) \xB7 ${touched.size} touched \xB7 connection: ${opts.connectionId || "prose default"}`
+  });
+  return { events, touched: touched.size, groups: casting.groups.length };
+}
 
 // src/backend.ts
 var DEFAULT_CONFIG = {
@@ -1293,7 +1705,9 @@ var DEFAULT_CONFIG = {
   directive: "",
   agentTimeoutMs: 90000,
   agentConnectionId: "",
-  humanTexture: true
+  humanTexture: true,
+  offscreenEnabled: true,
+  offscreenEventBudget: OFFSCREEN_EVENT_BUDGET
 };
 var CONFIG_PATH = "config.json";
 var config = { ...DEFAULT_CONFIG };
@@ -1309,6 +1723,7 @@ async function saveConfig() {
 }
 async function loadRun(chatId) {
   const run = await spindle.storage.getJson(runPath(chatId), { fallback: emptyRun(chatId) });
+  run.turnSeq ??= 0;
   for (const c of Object.values(run.characters))
     backfillEmotions(c);
   return run;
@@ -1429,10 +1844,12 @@ async function runAgentForChat(chatId, reply, userId) {
   const char = await characterForChat(chatId, userId);
   if (!char)
     return;
-  const dbg = {};
+  const dbg = { stages: {} };
+  const stageErrors = [];
   try {
     const run = await loadRun(chatId);
     ensurePrimary(run, char.id, char.name);
+    run.turnSeq = (run.turnSeq ?? 0) + 1;
     relaxPresent(run, config.decayRate);
     const fullChar = await spindle.characters.get(char.id, userId).catch(() => null);
     const cardContext = buildCardContext(fullChar);
@@ -1446,12 +1863,31 @@ async function runAgentForChat(chatId, reply, userId) {
         signal: AbortSignal.timeout(config.agentTimeoutMs),
         userId,
         connectionId: agentConn,
-        onTrace: (t) => dbg.update = capTrace(t)
+        onTrace: (t) => dbg.stages.update = capTrace(t)
       });
     } catch (err) {
       const m = err instanceof Error && err.name === "AbortError" ? "timed out" : String(err);
       result.finalNote = `update failed (${m})`;
+      stageErrors.push({ stage: "update", error: m });
       spindle.log.error(`[psyche] update pass failed \u2014 ${m}`);
+    }
+    let offscreenNote = "";
+    if (config.offscreenEnabled) {
+      try {
+        const off = await runOffscreenStage(run, {
+          eventBudget: config.offscreenEventBudget,
+          signal: AbortSignal.timeout(config.agentTimeoutMs),
+          userId,
+          connectionId: agentConn,
+          onTrace: (t) => dbg.stages.offscreen = capTrace(t)
+        });
+        offscreenNote = off ? `${off.groups} group(s), ${off.events} event(s), ${off.touched} touched` : "no one off-stage";
+      } catch (err) {
+        const m = err instanceof Error && err.name === "AbortError" ? "timed out" : String(err);
+        offscreenNote = `offscreen failed (${m})`;
+        stageErrors.push({ stage: "offscreen", error: m });
+        spindle.log.error(`[psyche] offscreen pass failed \u2014 ${m}`);
+      }
     }
     await saveRun(run);
     await refreshInjection(chatId, userId);
@@ -1461,7 +1897,11 @@ async function runAgentForChat(chatId, reply, userId) {
     };
     try {
       const prev = await loadDebug(chatId);
-      await spindle.storage.setJson(debugPath(chatId), { ...prev, ...dbg });
+      await spindle.storage.setJson(debugPath(chatId), {
+        ...prev,
+        ...dbg,
+        stages: { ...prev.stages, ...dbg.stages }
+      });
     } catch (err) {
       spindle.log.warn(`[psyche] could not save debug traces: ${String(err)}`);
     }
@@ -1471,9 +1911,11 @@ async function runAgentForChat(chatId, reply, userId) {
       characterCount: Object.keys(run.characters).length,
       rounds: result.rounds,
       edits: result.toolCalls.length,
-      note: result.finalNote
+      note: result.finalNote,
+      offscreenNote,
+      stageErrors
     });
-    spindle.log.info(`[psyche] ${char.name}: ${result.toolCalls.length} edits / ${result.rounds} rounds`);
+    spindle.log.info(`[psyche] ${char.name}: ${result.toolCalls.length} edits / ${result.rounds} rounds` + (offscreenNote ? ` \xB7 offstage: ${offscreenNote}` : ""));
   } catch (err) {
     const msg = err instanceof Error && err.name === "AbortError" ? "engine timed out" : String(err);
     spindle.log.error(`[psyche] engine failed: ${msg}`);
@@ -1619,6 +2061,8 @@ function snapshotRun(run) {
     present: c.present,
     approval: c.approval ?? 0,
     approvalLabel: describeApproval(c.approval ?? 0).label,
+    offscreenSummary: c.offscreenSummary ?? "",
+    knowledge: c.knowledge ?? [],
     emotions: EMOTIONS.map((def) => {
       const e = c.emotions[def.key] ?? { value: 0, baseline: 0 };
       return {
@@ -1666,7 +2110,9 @@ spindle.onFrontendMessage(async (payload, userId) => {
           directive: String(payload.config?.directive ?? config.directive),
           agentTimeoutMs: clampInt(payload.config?.agentTimeoutMs ?? config.agentTimeoutMs, 1e4, 300000),
           agentConnectionId: payload.config?.agentConnectionId === undefined ? config.agentConnectionId : String(payload.config.agentConnectionId ?? ""),
-          humanTexture: Boolean(payload.config?.humanTexture ?? config.humanTexture)
+          humanTexture: Boolean(payload.config?.humanTexture ?? config.humanTexture),
+          offscreenEnabled: Boolean(payload.config?.offscreenEnabled ?? config.offscreenEnabled),
+          offscreenEventBudget: clampInt(payload.config?.offscreenEventBudget ?? config.offscreenEventBudget, 1, 8)
         };
         await saveConfig();
         spindle.sendToFrontend({ type: "config", config }, userId);

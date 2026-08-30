@@ -1,5 +1,5 @@
 import { EMOTION_BY_KEY, EMOTION_KEYS, EMOTIONS, applyStimulus, describeValue } from './affect'
-import { CharacterState, RunState, newCharacter, slugify, backfillEmotions } from './state'
+import { CharacterState, RunState, newCharacter, slugify, backfillEmotions, pushKnowledge } from './state'
 import { describeApproval, APPROVAL_MIN, APPROVAL_MAX } from './approval'
 
 /* ------------------------------------------------------------------ *
@@ -148,6 +148,20 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'note_knowledge',
+    description:
+      "Log one short fact THIS character now personally knows — something they witnessed, were directly told, or noticed themselves this turn. This feeds what they can reason from later when they act off-stage; do not log anything they did not actually perceive. Keep it to one plain sentence, their own frame of reference (e.g. \"the player promised to meet me at the docks tonight\", not a scene summary).",
+    parameters: {
+      type: 'object',
+      properties: {
+        character_id: { type: 'string' },
+        text: { type: 'string', description: 'One short first-person-relevant fact, plain sentence.' },
+      },
+      required: ['character_id', 'text'],
+      additionalProperties: false,
+    },
+  },
 ]
 
 /* ---------------------------- executors ---------------------------- */
@@ -284,6 +298,16 @@ export async function executeTool(run: RunState, name: string, args: Args): Prom
       c.approval = after
       c.updatedAt = Date.now()
       return `${c.id} approval: ${before} -> ${after} (${describeApproval(after).label}).`
+    }
+
+    case 'note_knowledge': {
+      const c = find(run, str(args, 'character_id'))
+      if (!c) return `No character "${str(args, 'character_id')}".`
+      const text = str(args, 'text').trim()
+      if (!text) return 'note_knowledge requires text.'
+      pushKnowledge(c, text)
+      c.updatedAt = Date.now()
+      return `${c.id} now knows: "${text}"`
     }
 
     default:
