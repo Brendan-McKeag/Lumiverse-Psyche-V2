@@ -57,6 +57,14 @@ export interface CharacterState {
    * in-fiction time claim.
    */
   lastOffscreenAt?: number
+  /**
+   * EPHEMERAL — what this character is not giving away THIS turn, and a brief
+   * why. Regenerated fresh every turn the resistance stage runs, and cleared
+   * (not left stale) on any turn it finds nothing to withhold. This is
+   * deliberately NOT a persisted identity trait — there is no stored
+   * checklist for a character to keep defending turn after turn.
+   */
+  resistance?: string
   updatedAt: number
 }
 

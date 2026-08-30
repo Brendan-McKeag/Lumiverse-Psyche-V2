@@ -17,6 +17,7 @@ import {
   applyOffscreenResult,
   type OffscreenResult,
 } from '@psyche/core/offscreen'
+import { resistanceSystemPrompt, resistanceUserContent, parseResistance, applyResistanceResult } from '@psyche/core/resistance'
 
 /* ------------------------------------------------------------------ *
  * Psyche (core fork) — the mind engine (plugin transport)
@@ -243,6 +244,45 @@ export async function runOffscreenStage(
   })
 
   return { events, touched: touched.size, groups: casting.groups.length }
+}
+
+/* --------------------------- resistance stage -------------------------- *
+ * Fresh every turn, on-stage characters only: does the player's current
+ * steering conflict with who this character has shown themselves to be so
+ * far? No stored goals/persona are read or written — see resistance.ts.
+ * ------------------------------------------------------------------ */
+
+export async function runResistanceStage(
+  run: RunState,
+  opts: {
+    recentScene: string
+    cardContext: string
+    signal?: AbortSignal
+    userId?: string
+    connectionId?: string
+    onTrace?: TraceFn
+  },
+): Promise<{ touched: number } | null> {
+  const present = Object.values(run.characters).filter((c) => c.present)
+  if (!present.length) return null
+
+  const call = await quietJson(resistanceSystemPrompt(), resistanceUserContent(present, opts.recentScene, opts.cardContext), {
+    forceNoReasoning: false,
+    signal: opts.signal,
+    userId: opts.userId,
+    connectionId: opts.connectionId,
+  })
+  const notes = parseResistance(extractJson(call.content), present.map((c) => c.id))
+  applyResistanceResult(present, notes)
+
+  opts.onTrace?.({
+    at: Date.now(),
+    request: call.log.request,
+    response: call.log.response,
+    meta: `${Object.keys(notes).length}/${present.length} holding a line · connection: ${opts.connectionId || 'prose default'}`,
+  })
+
+  return { touched: Object.keys(notes).length }
 }
 
 export { AGENT_SENTINEL }

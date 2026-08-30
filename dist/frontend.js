@@ -30,6 +30,7 @@ function setup(ctx) {
     .ps-engine { font-size:12px; font-weight:600; padding:6px 10px; border-radius:var(--lumiverse-radius); border:1px solid var(--lumiverse-border); text-align:center; }
     .ps-engine.run { color:#e0a23c; border-color:#e0a23c; background:rgba(224,162,60,0.10); }
     .ps-engine.idle { color:#4fbf67; border-color:#4fbf67; background:rgba(79,191,103,0.07); }
+    .ps-resistance { font-size:12px; line-height:1.45; padding:8px 10px; border-left:2px solid #e0a23c; background:var(--lumiverse-fill-subtle); border-radius:var(--lumiverse-radius); }
     .ps-pre { white-space:pre-wrap; word-break:break-word; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:10.5px; line-height:1.4; max-height:360px; overflow:auto; padding:8px; background:var(--lumiverse-fill-subtle); border:1px solid var(--lumiverse-border); border-radius:var(--lumiverse-radius); }
   `);
   const tab = ctx.ui.registerDrawerTab({
@@ -55,6 +56,8 @@ function setup(ctx) {
           <h4 class="ps-h ps-d-name" style="margin:0"></h4>
           <label class="ps-row ps-muted"><input type="checkbox" class="ps-present" /> present</label>
         </div>
+
+        <div class="ps-resistance" style="display:none"></div>
 
         <h4 class="ps-h">Approval <span class="ps-muted">— their opinion of you (−10000…+10000, never decays)</span></h4>
         <div class="ps-emo">
@@ -86,6 +89,7 @@ function setup(ctx) {
         <label class="ps-row"><input type="checkbox" class="ps-texture" /> Human texture (energy-matched replies — flat moods read flat)</label>
         <label class="ps-row"><input type="checkbox" class="ps-offscreen" /> Off-stage simulation (absent characters live their own lives — costs extra LLM calls per turn)</label>
         <div><span class="ps-muted">Off-stage scenes per group per turn (1 = one full scene; rarely needs to be higher)</span><input type="number" class="ps-input ps-offbudget" min="1" max="8" /></div>
+        <label class="ps-row"><input type="checkbox" class="ps-resist" /> Self-interested resistance (a fresh per-turn check on whether the player's ask cuts against who a character is — not a stored goal, re-decided every turn)</label>
         <div><span class="ps-muted">Engine rounds per turn</span><input type="number" class="ps-input ps-rounds" min="1" max="20" /></div>
         <div><span class="ps-muted">Decay rate (0–1, relax toward baseline)</span><input type="number" class="ps-input ps-decay" min="0" max="1" step="0.01" /></div>
         <div><span class="ps-muted">Engine directive (optional)</span><textarea class="ps-ta ps-dir" placeholder="e.g. Slow-burn; keep characters guarded until trust is earned."></textarea></div>
@@ -98,6 +102,7 @@ function setup(ctx) {
         <div class="ps-row">
           <button class="ps-btn ps-dbg" data-k="update">Mind update</button>
           <button class="ps-btn ps-dbg" data-k="offscreen">Off-stage sim</button>
+          <button class="ps-btn ps-dbg" data-k="resistance">Resistance</button>
           <button class="ps-btn ps-dbg" data-k="injection">→ Injected directive</button>
           <button class="ps-btn ps-dbg-refresh" title="Re-fetch latest">↻</button>
         </div>
@@ -117,6 +122,7 @@ function setup(ctx) {
   const apprFillEl = q(".ps-appr-fill");
   const apprValEl = q(".ps-appr-val");
   const apprBandEl = q(".ps-appr-band");
+  const resistanceEl = q(".ps-resistance");
   const offSummaryEl = q(".ps-off-summary");
   const offHEl = q(".ps-off-h");
   const offKnowledgeEl = q(".ps-off-knowledge");
@@ -125,6 +131,7 @@ function setup(ctx) {
   const textureEl = q(".ps-texture");
   const offscreenEl = q(".ps-offscreen");
   const offBudgetEl = q(".ps-offbudget");
+  const resistEl = q(".ps-resist");
   const roundsEl = q(".ps-rounds");
   const decayEl = q(".ps-decay");
   const dirEl = q(".ps-dir");
@@ -174,6 +181,12 @@ function setup(ctx) {
     detail.style.display = "flex";
     dName.textContent = `${c.name}${c.isPrimary ? " (primary)" : ""}`;
     presentEl.checked = c.present;
+    if (c.resistance?.trim()) {
+      resistanceEl.textContent = `Holding the line: ${c.resistance}`;
+      resistanceEl.style.display = "block";
+    } else {
+      resistanceEl.style.display = "none";
+    }
     const appr = c.approval ?? 0;
     apprLabelEl.textContent = "approval";
     const half = Math.min(50, Math.abs(appr) / 1000 * 50);
@@ -325,7 +338,8 @@ ${t.response}`;
         agentConnectionId: connEl.value,
         humanTexture: textureEl.checked,
         offscreenEnabled: offscreenEl.checked,
-        offscreenEventBudget: Number(offBudgetEl.value)
+        offscreenEventBudget: Number(offBudgetEl.value),
+        resistanceEnabled: resistEl.checked
       }
     });
   });
@@ -344,7 +358,7 @@ ${t.response}`;
       case "state_changed": {
         const failed = Array.isArray(p.stageErrors) ? p.stageErrors : [];
         const warn = failed.length ? `⚠ ${failed.map((f) => f.stage).join(", ")} failed — ` : "";
-        activity.textContent = `${warn}Last turn: ${p.edits} edits over ${p.rounds} rounds` + `${p.offscreenNote ? ` · offstage: ${p.offscreenNote}` : ""}${p.note ? ` — ${p.note}` : ""}`;
+        activity.textContent = `${warn}Last turn: ${p.edits} edits over ${p.rounds} rounds` + `${p.offscreenNote ? ` · offstage: ${p.offscreenNote}` : ""}` + `${p.resistanceNote ? ` · resistance: ${p.resistanceNote}` : ""}${p.note ? ` — ${p.note}` : ""}`;
         activity.style.color = failed.length ? "#e5534b" : "";
         requestState();
         requestDebug();
@@ -367,6 +381,7 @@ ${t.response}`;
         textureEl.checked = c.humanTexture !== false;
         offscreenEl.checked = c.offscreenEnabled !== false;
         offBudgetEl.value = String(c.offscreenEventBudget ?? 1);
+        resistEl.checked = c.resistanceEnabled !== false;
         roundsEl.value = String(c.maxRounds ?? 8);
         decayEl.value = String(c.decayRate ?? 0.12);
         dirEl.value = c.directive ?? "";

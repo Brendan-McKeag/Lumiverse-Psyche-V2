@@ -14,7 +14,7 @@ import {
   APPROVAL_MIN,
   APPROVAL_MAX,
 } from './run'
-import { runPsycheAgent, runOffscreenStage, StageTrace } from './agent'
+import { runPsycheAgent, runOffscreenStage, runResistanceStage, StageTrace } from './agent'
 import { EMOTIONS, EMOTION_BY_KEY, describeValue, relaxToward } from '@psyche/core/affect'
 import { OFFSCREEN_EVENT_BUDGET } from '@psyche/core/offscreen'
 
@@ -43,6 +43,8 @@ interface Config {
   offscreenEnabled: boolean
   /** max off-stage events simulated per group per turn (narrative pacing knob) */
   offscreenEventBudget: number
+  /** run the ephemeral per-turn resistance/conflict-check stage each turn */
+  resistanceEnabled: boolean
 }
 
 const DEFAULT_CONFIG: Config = {
@@ -55,6 +57,7 @@ const DEFAULT_CONFIG: Config = {
   humanTexture: true,
   offscreenEnabled: true,
   offscreenEventBudget: OFFSCREEN_EVENT_BUDGET,
+  resistanceEnabled: true,
 }
 const CONFIG_PATH = 'config.json'
 
@@ -256,6 +259,27 @@ async function runAgentForChat(chatId: string, reply: string, userId?: string) {
       }
     }
 
+    // ── stage 3: ephemeral per-turn resistance (on-stage only) ──────────
+    let resistanceNote = ''
+    if (config.resistanceEnabled) {
+      try {
+        const res = await runResistanceStage(run, {
+          recentScene: transcript.slice(-6000),
+          cardContext,
+          signal: AbortSignal.timeout(config.agentTimeoutMs),
+          userId,
+          connectionId: agentConn,
+          onTrace: (t) => (dbg.stages!.resistance = capTrace(t)),
+        })
+        resistanceNote = res ? `${res.touched} character(s) holding a line` : 'no one present'
+      } catch (err) {
+        const m = err instanceof Error && err.name === 'AbortError' ? 'timed out' : String(err)
+        resistanceNote = `resistance failed (${m})`
+        stageErrors.push({ stage: 'resistance', error: m })
+        spindle.log.error(`[psyche] resistance pass failed — ${m}`)
+      }
+    }
+
     await saveRun(run)
     await refreshInjection(chatId, userId)
 
@@ -285,12 +309,14 @@ async function runAgentForChat(chatId: string, reply: string, userId?: string) {
       edits: result.toolCalls.length,
       note: result.finalNote,
       offscreenNote,
+      resistanceNote,
       stageErrors,
     })
 
     spindle.log.info(
       `[psyche] ${char.name}: ${result.toolCalls.length} edits / ${result.rounds} rounds` +
-        (offscreenNote ? ` · offstage: ${offscreenNote}` : ''),
+        (offscreenNote ? ` · offstage: ${offscreenNote}` : '') +
+        (resistanceNote ? ` · resistance: ${resistanceNote}` : ''),
     )
   } catch (err) {
     const msg = err instanceof Error && err.name === 'AbortError' ? 'engine timed out' : String(err)
@@ -455,6 +481,7 @@ function snapshotRun(run: RunState) {
     approvalLabel: describeApproval(c.approval ?? 0).label,
     offscreenSummary: c.offscreenSummary ?? '',
     knowledge: c.knowledge ?? [],
+    resistance: c.resistance ?? '',
     emotions: EMOTIONS.map((def) => {
       const e = c.emotions[def.key] ?? { value: 0, baseline: 0 }
       return {
@@ -512,6 +539,7 @@ spindle.onFrontendMessage(async (payload: any, userId) => {
         humanTexture: Boolean(payload.config?.humanTexture ?? config.humanTexture),
         offscreenEnabled: Boolean(payload.config?.offscreenEnabled ?? config.offscreenEnabled),
         offscreenEventBudget: clampInt(payload.config?.offscreenEventBudget ?? config.offscreenEventBudget, 1, 8),
+        resistanceEnabled: Boolean(payload.config?.resistanceEnabled ?? config.resistanceEnabled),
       }
       await saveConfig()
       spindle.sendToFrontend({ type: 'config', config }, userId)

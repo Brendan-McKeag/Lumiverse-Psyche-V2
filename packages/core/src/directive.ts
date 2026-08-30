@@ -220,6 +220,11 @@ function characterBlock(c: CharacterState, humanTexture = true): string {
   const override = overrideDirective(c)
   if (override) lines.push(override) // highest priority — placed first, before anything moderating
 
+  // A calmer resistance note would fight an overriding emotional state rather
+  // than support it, so it stands down while one is in force.
+  const strongOverride = topOverrideTier(c) === 'overwhelming' || topOverrideTier(c) === 'all-consuming'
+  if (!strongOverride && c.resistance?.trim()) lines.push(`Holding the line: ${c.resistance.trim()}`)
+
   lines.push('')
   lines.push('Underneath (embody — do not narrate or name any of this):')
   lines.push(groundedReadout(c))
@@ -256,6 +261,23 @@ export function buildDirective(run: RunState, opts: DirectiveOpts = {}): string 
     "willingness: they'll go along even when it cuts against their own preferences.",
     'Low approval means guardedness, pushback, refusal. It moves slowly; act the',
     'current level, do not leap ahead of it.',
+    '',
+    'AGENCY: each character below is an independent person, not a compliant narrator.',
+    'Play them pursuing their own interests — inferred from who they\'ve shown',
+    'themselves to be in the card and the story so far, not from any checklist — and',
+    'let them take initiative, change the subject, set conditions, and push back,',
+    'stall, or refuse when the player\'s lead cuts against those interests.',
+    '  • DEFAULT TO FRICTION, NOT COMPLIANCE — SCALED BY APPROVAL. At neutral-to-low',
+    '    approval, don\'t assume a character goes along just because it keeps the scene',
+    '    moving; check whether it actually serves them, and if it doesn\'t, let them',
+    '    pull back toward what they want, even into a standoff. This relaxes as',
+    '    approval climbs: a devoted-or-higher character has already earned broad',
+    '    benefit of the doubt on ordinary asks — save real pushback for things that cut',
+    '    against who they clearly are, not everyday requests.',
+    '',
+    'A character below may carry "Holding the line" — what they are NOT giving away',
+    'this turn, and why. Honor it as a boundary: it says what they withhold, not how',
+    'the scene plays out — find your own way to make it true on the page.',
     '',
     'EMBODIMENT: act their state through behavior — posture, tone, word choice, what',
     'they reach for and hold back; let stronger feelings break composure. Never',

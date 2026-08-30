@@ -12,6 +12,7 @@
     "./tools": "./src/tools.ts",
     "./prompts": "./src/prompts.ts",
     "./rubrics": "./src/rubrics.ts",
-    "./offscreen": "./src/offscreen.ts"
+    "./offscreen": "./src/offscreen.ts",
+    "./resistance": "./src/resistance.ts"
   }
 }

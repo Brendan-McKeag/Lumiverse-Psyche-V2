@@ -683,6 +683,16 @@ function overrideTier(value, kind) {
     return "intense";
   return null;
 }
+function topOverrideTier(c) {
+  let best = null;
+  const rank = { intense: 1, overwhelming: 2, "all-consuming": 3 };
+  for (const def of EMOTIONS) {
+    const t = overrideTier(v(c, def.key), def.kind);
+    if (t && (!best || rank[t] > rank[best]))
+      best = t;
+  }
+  return best;
+}
 function overrideDirective(c) {
   const rows = EMOTIONS.map((def) => ({ def, val: v(c, def.key), tier: overrideTier(v(c, def.key), def.kind) })).filter((r) => r.tier).sort((a, b) => Math.abs(b.val) - Math.abs(a.val));
   if (!rows.length)
@@ -711,6 +721,9 @@ function characterBlock(c, humanTexture = true) {
   const override = overrideDirective(c);
   if (override)
     lines.push(override);
+  const strongOverride = topOverrideTier(c) === "overwhelming" || topOverrideTier(c) === "all-consuming";
+  if (!strongOverride && c.resistance?.trim())
+    lines.push(`Holding the line: ${c.resistance.trim()}`);
   lines.push("");
   lines.push("Underneath (embody \u2014 do not narrate or name any of this):");
   lines.push(groundedReadout(c));
@@ -740,6 +753,23 @@ function buildDirective(run, opts = {}) {
     "willingness: they'll go along even when it cuts against their own preferences.",
     "Low approval means guardedness, pushback, refusal. It moves slowly; act the",
     "current level, do not leap ahead of it.",
+    "",
+    "AGENCY: each character below is an independent person, not a compliant narrator.",
+    "Play them pursuing their own interests \u2014 inferred from who they've shown",
+    "themselves to be in the card and the story so far, not from any checklist \u2014 and",
+    "let them take initiative, change the subject, set conditions, and push back,",
+    "stall, or refuse when the player's lead cuts against those interests.",
+    "  \u2022 DEFAULT TO FRICTION, NOT COMPLIANCE \u2014 SCALED BY APPROVAL. At neutral-to-low",
+    "    approval, don't assume a character goes along just because it keeps the scene",
+    "    moving; check whether it actually serves them, and if it doesn't, let them",
+    "    pull back toward what they want, even into a standoff. This relaxes as",
+    "    approval climbs: a devoted-or-higher character has already earned broad",
+    "    benefit of the doubt on ordinary asks \u2014 save real pushback for things that cut",
+    "    against who they clearly are, not everyday requests.",
+    "",
+    'A character below may carry "Holding the line" \u2014 what they are NOT giving away',
+    "this turn, and why. Honor it as a boundary: it says what they withhold, not how",
+    "the scene plays out \u2014 find your own way to make it true on the page.",
     "",
     "EMBODIMENT: act their state through behavior \u2014 posture, tone, word choice, what",
     "they reach for and hold back; let stronger feelings break composure. Never",
@@ -1574,6 +1604,80 @@ function applyOffscreenResult(run, result, turnSeq) {
   return { touched, events: result.events.length };
 }
 
+// packages/core/src/resistance.ts
+var RESISTANCE_NOTE_CAP = 400;
+function resistanceSystemPrompt() {
+  return [
+    AGENT_SENTINEL,
+    "You are Psyche's conflict check, run fresh every turn. For each character below,",
+    "read the recent scene and decide: is the player's CURRENT message asking for or",
+    "steering toward something that cuts against who this character has shown",
+    "themselves to be so far \u2014 their manner, their values, what they clearly want \u2014",
+    "given the card and the story up to now?",
+    "",
+    "You have NO goals list, NO persona sheet, and NO stored profile for these",
+    "characters. That is deliberate. Read who they are the same way you would if you",
+    "were about to write their next line yourself: from the card, and from how they",
+    "have actually behaved in the scene so far. Do not invent a fixed trait to defend \u2014",
+    "judge only what THIS moment, in THIS scene, would plausibly cost them.",
+    "",
+    "SCALE YOUR DEFAULT BY APPROVAL (given per character below):",
+    "  \u2022 At neutral-to-low approval, bias toward finding real friction. Do not let a",
+    "    character hand over agreement, warmth, or ground in the scene just because it",
+    "    is convenient or keeps things moving \u2014 check whether it actually serves them.",
+    "  \u2022 At high approval (devoted or above), the bias FLIPS: compliance on ordinary",
+    "    asks is already earned. Do not manufacture reluctance a trusted character has",
+    "    no real reason to feel \u2014 that is an equal and opposite failure.",
+    "  \u2022 Most turns, for most characters, the honest answer is nothing conflicts.",
+    "    Omitting a character (or returning an empty note) is the expected, common",
+    "    result \u2014 do not invent friction out of habit.",
+    "",
+    "WHAT YOU WRITE IS A BOUNDARY, NOT A SCRIPT. Say what the character is not giving",
+    "away \u2014 warmth, agreement, trust, ground in the scene \u2014 and a brief why. NEVER write",
+    "the specific line, action, or plot beat they use to hold it; that is the prose",
+    "writer's job, working from your note, not yours. One to two sentences.",
+    "",
+    'Return ONLY JSON: { "<character_id>": "<note>", ... } \u2014 omit any character with',
+    "nothing to report."
+  ].join(`
+`);
+}
+function resistanceUserContent(present, recentScene, cardContext) {
+  return [
+    cardContext ? ["PRIMARY CHARACTER CARD (source of truth for who they are):", '"""', cardContext, '"""', ""].join(`
+`) : "",
+    "THE RECENT SCENE (most recent last \u2014 the player's latest message is what you are",
+    "checking against):",
+    '"""',
+    recentScene.trim() || "(the scene has just begun)",
+    '"""',
+    "",
+    "CHARACTERS PRESENT:",
+    ...present.map((c) => [`### ${c.id} \u2014 ${c.name}`, `  ${approvalLine(c)}`, groundedReadout(c)].join(`
+`)),
+    "",
+    "Run the check now. Return only the JSON."
+  ].filter(Boolean).join(`
+`);
+}
+function parseResistance(raw, presentIds) {
+  const known = new Set(presentIds);
+  const out = {};
+  if (!raw || typeof raw !== "object")
+    return out;
+  for (const [id, text] of Object.entries(raw)) {
+    if (!known.has(id) || typeof text !== "string" || !text.trim())
+      continue;
+    out[id] = text.trim().slice(0, RESISTANCE_NOTE_CAP);
+  }
+  return out;
+}
+function applyResistanceResult(present, notes) {
+  for (const c of present) {
+    c.resistance = notes[c.id]?.trim() || undefined;
+  }
+}
+
 // src/agent.ts
 function blockToText(b) {
   if (typeof b === "string")
@@ -1720,6 +1824,26 @@ ${l.response}`).join(`
   });
   return { events, touched: touched.size, groups: casting.groups.length };
 }
+async function runResistanceStage(run, opts) {
+  const present = Object.values(run.characters).filter((c) => c.present);
+  if (!present.length)
+    return null;
+  const call = await quietJson(resistanceSystemPrompt(), resistanceUserContent(present, opts.recentScene, opts.cardContext), {
+    forceNoReasoning: false,
+    signal: opts.signal,
+    userId: opts.userId,
+    connectionId: opts.connectionId
+  });
+  const notes = parseResistance(extractJson(call.content), present.map((c) => c.id));
+  applyResistanceResult(present, notes);
+  opts.onTrace?.({
+    at: Date.now(),
+    request: call.log.request,
+    response: call.log.response,
+    meta: `${Object.keys(notes).length}/${present.length} holding a line \xB7 connection: ${opts.connectionId || "prose default"}`
+  });
+  return { touched: Object.keys(notes).length };
+}
 
 // src/backend.ts
 var DEFAULT_CONFIG = {
@@ -1731,7 +1855,8 @@ var DEFAULT_CONFIG = {
   agentConnectionId: "",
   humanTexture: true,
   offscreenEnabled: true,
-  offscreenEventBudget: OFFSCREEN_EVENT_BUDGET
+  offscreenEventBudget: OFFSCREEN_EVENT_BUDGET,
+  resistanceEnabled: true
 };
 var CONFIG_PATH = "config.json";
 var config = { ...DEFAULT_CONFIG };
@@ -1913,6 +2038,25 @@ async function runAgentForChat(chatId, reply, userId) {
         spindle.log.error(`[psyche] offscreen pass failed \u2014 ${m}`);
       }
     }
+    let resistanceNote = "";
+    if (config.resistanceEnabled) {
+      try {
+        const res = await runResistanceStage(run, {
+          recentScene: transcript.slice(-6000),
+          cardContext,
+          signal: AbortSignal.timeout(config.agentTimeoutMs),
+          userId,
+          connectionId: agentConn,
+          onTrace: (t) => dbg.stages.resistance = capTrace(t)
+        });
+        resistanceNote = res ? `${res.touched} character(s) holding a line` : "no one present";
+      } catch (err) {
+        const m = err instanceof Error && err.name === "AbortError" ? "timed out" : String(err);
+        resistanceNote = `resistance failed (${m})`;
+        stageErrors.push({ stage: "resistance", error: m });
+        spindle.log.error(`[psyche] resistance pass failed \u2014 ${m}`);
+      }
+    }
     await saveRun(run);
     await refreshInjection(chatId, userId);
     dbg.injection = {
@@ -1937,9 +2081,10 @@ async function runAgentForChat(chatId, reply, userId) {
       edits: result.toolCalls.length,
       note: result.finalNote,
       offscreenNote,
+      resistanceNote,
       stageErrors
     });
-    spindle.log.info(`[psyche] ${char.name}: ${result.toolCalls.length} edits / ${result.rounds} rounds` + (offscreenNote ? ` \xB7 offstage: ${offscreenNote}` : ""));
+    spindle.log.info(`[psyche] ${char.name}: ${result.toolCalls.length} edits / ${result.rounds} rounds` + (offscreenNote ? ` \xB7 offstage: ${offscreenNote}` : "") + (resistanceNote ? ` \xB7 resistance: ${resistanceNote}` : ""));
   } catch (err) {
     const msg = err instanceof Error && err.name === "AbortError" ? "engine timed out" : String(err);
     spindle.log.error(`[psyche] engine failed: ${msg}`);
@@ -2087,6 +2232,7 @@ function snapshotRun(run) {
     approvalLabel: describeApproval(c.approval ?? 0).label,
     offscreenSummary: c.offscreenSummary ?? "",
     knowledge: c.knowledge ?? [],
+    resistance: c.resistance ?? "",
     emotions: EMOTIONS.map((def) => {
       const e = c.emotions[def.key] ?? { value: 0, baseline: 0 };
       return {
@@ -2136,7 +2282,8 @@ spindle.onFrontendMessage(async (payload, userId) => {
           agentConnectionId: payload.config?.agentConnectionId === undefined ? config.agentConnectionId : String(payload.config.agentConnectionId ?? ""),
           humanTexture: Boolean(payload.config?.humanTexture ?? config.humanTexture),
           offscreenEnabled: Boolean(payload.config?.offscreenEnabled ?? config.offscreenEnabled),
-          offscreenEventBudget: clampInt(payload.config?.offscreenEventBudget ?? config.offscreenEventBudget, 1, 8)
+          offscreenEventBudget: clampInt(payload.config?.offscreenEventBudget ?? config.offscreenEventBudget, 1, 8),
+          resistanceEnabled: Boolean(payload.config?.resistanceEnabled ?? config.resistanceEnabled)
         };
         await saveConfig();
         spindle.sendToFrontend({ type: "config", config }, userId);

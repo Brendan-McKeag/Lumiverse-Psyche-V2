@@ -26,6 +26,7 @@ interface Character {
   approvalLabel: string
   offscreenSummary: string
   knowledge: string[]
+  resistance: string
   emotions: Emotion[]
 }
 interface Snapshot {
@@ -65,6 +66,7 @@ export function setup(ctx: SpindleFrontendContext) {
     .ps-engine { font-size:12px; font-weight:600; padding:6px 10px; border-radius:var(--lumiverse-radius); border:1px solid var(--lumiverse-border); text-align:center; }
     .ps-engine.run { color:#e0a23c; border-color:#e0a23c; background:rgba(224,162,60,0.10); }
     .ps-engine.idle { color:#4fbf67; border-color:#4fbf67; background:rgba(79,191,103,0.07); }
+    .ps-resistance { font-size:12px; line-height:1.45; padding:8px 10px; border-left:2px solid #e0a23c; background:var(--lumiverse-fill-subtle); border-radius:var(--lumiverse-radius); }
     .ps-pre { white-space:pre-wrap; word-break:break-word; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:10.5px; line-height:1.4; max-height:360px; overflow:auto; padding:8px; background:var(--lumiverse-fill-subtle); border:1px solid var(--lumiverse-border); border-radius:var(--lumiverse-radius); }
   `)
 
@@ -93,6 +95,8 @@ export function setup(ctx: SpindleFrontendContext) {
           <h4 class="ps-h ps-d-name" style="margin:0"></h4>
           <label class="ps-row ps-muted"><input type="checkbox" class="ps-present" /> present</label>
         </div>
+
+        <div class="ps-resistance" style="display:none"></div>
 
         <h4 class="ps-h">Approval <span class="ps-muted">— their opinion of you (−10000…+10000, never decays)</span></h4>
         <div class="ps-emo">
@@ -124,6 +128,7 @@ export function setup(ctx: SpindleFrontendContext) {
         <label class="ps-row"><input type="checkbox" class="ps-texture" /> Human texture (energy-matched replies — flat moods read flat)</label>
         <label class="ps-row"><input type="checkbox" class="ps-offscreen" /> Off-stage simulation (absent characters live their own lives — costs extra LLM calls per turn)</label>
         <div><span class="ps-muted">Off-stage scenes per group per turn (1 = one full scene; rarely needs to be higher)</span><input type="number" class="ps-input ps-offbudget" min="1" max="8" /></div>
+        <label class="ps-row"><input type="checkbox" class="ps-resist" /> Self-interested resistance (a fresh per-turn check on whether the player's ask cuts against who a character is — not a stored goal, re-decided every turn)</label>
         <div><span class="ps-muted">Engine rounds per turn</span><input type="number" class="ps-input ps-rounds" min="1" max="20" /></div>
         <div><span class="ps-muted">Decay rate (0–1, relax toward baseline)</span><input type="number" class="ps-input ps-decay" min="0" max="1" step="0.01" /></div>
         <div><span class="ps-muted">Engine directive (optional)</span><textarea class="ps-ta ps-dir" placeholder="e.g. Slow-burn; keep characters guarded until trust is earned."></textarea></div>
@@ -136,6 +141,7 @@ export function setup(ctx: SpindleFrontendContext) {
         <div class="ps-row">
           <button class="ps-btn ps-dbg" data-k="update">Mind update</button>
           <button class="ps-btn ps-dbg" data-k="offscreen">Off-stage sim</button>
+          <button class="ps-btn ps-dbg" data-k="resistance">Resistance</button>
           <button class="ps-btn ps-dbg" data-k="injection">→ Injected directive</button>
           <button class="ps-btn ps-dbg-refresh" title="Re-fetch latest">↻</button>
         </div>
@@ -156,6 +162,7 @@ export function setup(ctx: SpindleFrontendContext) {
   const apprFillEl = q<HTMLElement>('.ps-appr-fill')
   const apprValEl = q<HTMLInputElement>('.ps-appr-val')
   const apprBandEl = q<HTMLElement>('.ps-appr-band')
+  const resistanceEl = q<HTMLElement>('.ps-resistance')
   const offSummaryEl = q<HTMLElement>('.ps-off-summary')
   const offHEl = q<HTMLElement>('.ps-off-h')
   const offKnowledgeEl = q<HTMLElement>('.ps-off-knowledge')
@@ -164,6 +171,7 @@ export function setup(ctx: SpindleFrontendContext) {
   const textureEl = q<HTMLInputElement>('.ps-texture')
   const offscreenEl = q<HTMLInputElement>('.ps-offscreen')
   const offBudgetEl = q<HTMLInputElement>('.ps-offbudget')
+  const resistEl = q<HTMLInputElement>('.ps-resist')
   const roundsEl = q<HTMLInputElement>('.ps-rounds')
   const decayEl = q<HTMLInputElement>('.ps-decay')
   const dirEl = q<HTMLTextAreaElement>('.ps-dir')
@@ -239,6 +247,13 @@ export function setup(ctx: SpindleFrontendContext) {
     detail.style.display = 'flex'
     dName.textContent = `${c.name}${c.isPrimary ? ' (primary)' : ''}`
     presentEl.checked = c.present
+
+    if (c.resistance?.trim()) {
+      resistanceEl.textContent = `Holding the line: ${c.resistance}`
+      resistanceEl.style.display = 'block'
+    } else {
+      resistanceEl.style.display = 'none'
+    }
 
     // Approval meter: the ±1000 window is where most play lives; the fill
     // saturates there while the input still takes the full ±10000 scale.
@@ -409,6 +424,7 @@ export function setup(ctx: SpindleFrontendContext) {
         humanTexture: textureEl.checked,
         offscreenEnabled: offscreenEl.checked,
         offscreenEventBudget: Number(offBudgetEl.value),
+        resistanceEnabled: resistEl.checked,
       },
     })
   })
@@ -428,7 +444,8 @@ export function setup(ctx: SpindleFrontendContext) {
         const warn = failed.length ? `⚠ ${failed.map((f: { stage: string }) => f.stage).join(', ')} failed — ` : ''
         activity.textContent =
           `${warn}Last turn: ${p.edits} edits over ${p.rounds} rounds` +
-          `${p.offscreenNote ? ` · offstage: ${p.offscreenNote}` : ''}${p.note ? ` — ${p.note}` : ''}`
+          `${p.offscreenNote ? ` · offstage: ${p.offscreenNote}` : ''}` +
+          `${p.resistanceNote ? ` · resistance: ${p.resistanceNote}` : ''}${p.note ? ` — ${p.note}` : ''}`
         activity.style.color = failed.length ? '#e5534b' : ''
         requestState()
         requestDebug()
@@ -450,6 +467,7 @@ export function setup(ctx: SpindleFrontendContext) {
         textureEl.checked = c.humanTexture !== false
         offscreenEl.checked = c.offscreenEnabled !== false
         offBudgetEl.value = String(c.offscreenEventBudget ?? 1)
+        resistEl.checked = c.resistanceEnabled !== false
         roundsEl.value = String(c.maxRounds ?? 8)
         decayEl.value = String(c.decayRate ?? 0.12)
         dirEl.value = c.directive ?? ''

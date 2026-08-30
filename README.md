@@ -55,13 +55,24 @@ top of.
   told. On by default, toggleable and budget-tunable in settings — it favors
   depth (a dedicated call per character/group) over minimizing call count.
 
+- **Not a yes-man.** A fresh, per-turn check on every present character:
+  does the player's current message ask for something that cuts against who
+  this character has shown themselves to be so far? If so, a short
+  "Holding the line" note describes what they're not giving away and why —
+  scaled by approval, so low approval biases toward real friction and high
+  approval biases toward earned compliance. Deliberately **not** a
+  persona/goals field: nothing here is stored past the turn that produced
+  it, and every present character's note is either freshly written or
+  explicitly cleared each turn, so a character can never get stuck
+  defending a stale, re-injected checklist.
+
 ## Architecture
 
 A Bun workspace with two parts:
 
 | part | role |
 |------|------|
-| `packages/core` (`@psyche/core`) | pure logic, no host API, no network: the 40-emotion schema + saturation math (`affect.ts`), run-state types (`state.ts`), the approval ledger (`approval.ts`), the per-emotion behavioral rubrics (`rubrics.ts`), the live state→behavior directive renderer (`directive.ts`), the agent tool schemas + executors (`tools.ts`), the mind-update stage prompt (`prompts.ts`), and the off-stage simulation stage (`offscreen.ts`). |
+| `packages/core` (`@psyche/core`) | pure logic, no host API, no network: the 40-emotion schema + saturation math (`affect.ts`), run-state types (`state.ts`), the approval ledger (`approval.ts`), the per-emotion behavioral rubrics (`rubrics.ts`), the live state→behavior directive renderer (`directive.ts`), the agent tool schemas + executors (`tools.ts`), the mind-update stage prompt (`prompts.ts`), the off-stage simulation stage (`offscreen.ts`), and the ephemeral resistance/conflict-check stage (`resistance.ts`). |
 | `src/` (the plugin) | Lumiverse wiring: generation hooks, storage, the world-info injection interceptor, and the frontend drawer. `runAgentForChat` in `backend.ts` runs two fail-soft stages per turn — mind-update, then off-stage simulation — each with its own debug trace and settings toggle, so future stages (a pacing "director," milestone-triggered character-card evolution) can slot in the same way. |
 
 Plugin state is keyed by `chatId` under the extension's scoped storage
@@ -81,8 +92,9 @@ rebuild before publishing.
 ## Settings
 
 In the **Psyche** drawer tab: enable/disable, human texture (energy-matched
-replies), off-stage simulation (on/off + event budget), engine rounds per
-turn, decay rate, an optional engine directive (tone steering), reset run,
-per-character presence toggle, and direct editing of every emotion value +
-approval. The debug tab shows the raw request/response for each turn's mind
-update, off-stage simulation, and injected directive.
+replies), off-stage simulation (on/off + event budget), self-interested
+resistance (on/off), engine rounds per turn, decay rate, an optional engine
+directive (tone steering), reset run, per-character presence toggle, and
+direct editing of every emotion value + approval. The debug tab shows the
+raw request/response for each turn's mind update, off-stage simulation,
+resistance check, and injected directive.
