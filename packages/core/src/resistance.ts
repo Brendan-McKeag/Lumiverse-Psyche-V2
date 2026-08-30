@@ -16,7 +16,7 @@ import { AGENT_SENTINEL } from './prompts'
 
 export const RESISTANCE_NOTE_CAP = 400 // a boundary sentence or two, not a scene
 
-export function resistanceSystemPrompt(): string {
+export function resistanceSystemPrompt(directive = ''): string {
   return [
     AGENT_SENTINEL,
     'You are Psyche\'s conflict check, run fresh every turn. For each character below,',
@@ -49,6 +49,7 @@ export function resistanceSystemPrompt(): string {
     '',
     'Return ONLY JSON: { "<character_id>": "<note>", ... } — omit any character with',
     'nothing to report.',
+    directive.trim() ? `\nOPERATOR DIRECTIVE:\n${directive.trim()}` : '',
   ].join('\n')
 }
 

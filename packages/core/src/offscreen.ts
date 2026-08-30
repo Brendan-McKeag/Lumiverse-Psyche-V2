@@ -97,7 +97,7 @@ export interface CastingResult {
   groups: CastingGroup[]
 }
 
-export function castingSystemPrompt(): string {
+export function castingSystemPrompt(directive = ''): string {
   return [
     AGENT_SENTINEL,
     'You are casting this turn\'s off-stage activity. The player is on stage with',
@@ -117,6 +117,7 @@ export function castingSystemPrompt(): string {
     'written later, by someone else, with more room to think it through.',
     '',
     'Return ONLY JSON: { "groups": [ { "characterIds": ["<id>", ...], "steer": "<optional, only for 2+>" } ] }',
+    directive.trim() ? `\nOPERATOR DIRECTIVE:\n${directive.trim()}` : '',
   ].join('\n')
 }
 
@@ -158,7 +159,7 @@ export function parseCasting(raw: unknown, offStageIds: string[]): CastingResult
 
 /* -------------------------- per-unit simulation ----------------------- */
 
-export function unitSystemPrompt(eventBudget: number): string {
+export function unitSystemPrompt(eventBudget: number, directive = ''): string {
   return [
     AGENT_SENTINEL,
     'You are the prose writer for this scene — exactly as much as you would be if the',
@@ -219,6 +220,7 @@ export function unitSystemPrompt(eventBudget: number): string {
     '',
     'Feelings move gently — intensity roughly ±0.5 to ±2 unless something real and',
     'specific happened to them. Only use the character ids you were given.',
+    directive.trim() ? `\nOPERATOR DIRECTIVE:\n${directive.trim()}` : '',
   ].join('\n')
 }
 

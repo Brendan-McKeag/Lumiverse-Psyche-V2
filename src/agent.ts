@@ -184,6 +184,7 @@ export async function runOffscreenStage(
   run: RunState,
   opts: {
     eventBudget: number
+    directive?: string
     signal?: AbortSignal
     userId?: string
     connectionId?: string
@@ -204,7 +205,7 @@ export async function runOffscreenStage(
     name: c.name,
     oneLineState: `${describeApproval(c.approval ?? 0).label} approval; feeling ${salientFeelings(c)}`,
   }))
-  const castingCall = await quietJson(castingSystemPrompt(), castingUserContent(roster), {
+  const castingCall = await quietJson(castingSystemPrompt(opts.directive), castingUserContent(roster), {
     forceNoReasoning: true,
     signal: opts.signal,
     userId: opts.userId,
@@ -220,7 +221,7 @@ export async function runOffscreenStage(
       if (!members.length) return null
       try {
         const call = await quietJson(
-          unitSystemPrompt(opts.eventBudget),
+          unitSystemPrompt(opts.eventBudget, opts.directive),
           unitUserContent(members.map((c) => ({ c, feelings: salientFeelings(c) })), g.steer, onStageNames),
           { forceNoReasoning: false, signal: opts.signal, userId: opts.userId, connectionId: opts.connectionId },
         )
@@ -257,6 +258,7 @@ export async function runResistanceStage(
   opts: {
     recentScene: string
     cardContext: string
+    directive?: string
     signal?: AbortSignal
     userId?: string
     connectionId?: string
@@ -266,12 +268,16 @@ export async function runResistanceStage(
   const present = Object.values(run.characters).filter((c) => c.present)
   if (!present.length) return null
 
-  const call = await quietJson(resistanceSystemPrompt(), resistanceUserContent(present, opts.recentScene, opts.cardContext), {
-    forceNoReasoning: false,
-    signal: opts.signal,
-    userId: opts.userId,
-    connectionId: opts.connectionId,
-  })
+  const call = await quietJson(
+    resistanceSystemPrompt(opts.directive),
+    resistanceUserContent(present, opts.recentScene, opts.cardContext),
+    {
+      forceNoReasoning: false,
+      signal: opts.signal,
+      userId: opts.userId,
+      connectionId: opts.connectionId,
+    },
+  )
   const notes = parseResistance(extractJson(call.content), present.map((c) => c.id))
   applyResistanceResult(present, notes)
 

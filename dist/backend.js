@@ -1347,7 +1347,7 @@ function salientFeelings(c) {
     return "quiet, even-keeled";
   return rows.map((r) => `${r.def.label.toLowerCase().split(" (")[0]} (${describeValue(r.def, r.value).label})`).join(", ");
 }
-function castingSystemPrompt() {
+function castingSystemPrompt(directive2 = "") {
   return [
     AGENT_SENTINEL,
     "You are casting this turn's off-stage activity. The player is on stage with",
@@ -1366,7 +1366,10 @@ function castingSystemPrompt() {
     'on something practical") \u2014 never its content, dialogue, or outcome. That gets',
     "written later, by someone else, with more room to think it through.",
     "",
-    'Return ONLY JSON: { "groups": [ { "characterIds": ["<id>", ...], "steer": "<optional, only for 2+>" } ] }'
+    'Return ONLY JSON: { "groups": [ { "characterIds": ["<id>", ...], "steer": "<optional, only for 2+>" } ] }',
+    directive2.trim() ? `
+OPERATOR DIRECTIVE:
+${directive2.trim()}` : ""
   ].join(`
 `);
 }
@@ -1401,7 +1404,7 @@ function parseCasting(raw, offStageIds) {
   }
   return { groups };
 }
-function unitSystemPrompt(eventBudget) {
+function unitSystemPrompt(eventBudget, directive2 = "") {
   return [
     AGENT_SENTINEL,
     "You are the prose writer for this scene \u2014 exactly as much as you would be if the",
@@ -1460,7 +1463,10 @@ function unitSystemPrompt(eventBudget) {
     "}",
     "",
     "Feelings move gently \u2014 intensity roughly \xB10.5 to \xB12 unless something real and",
-    "specific happened to them. Only use the character ids you were given."
+    "specific happened to them. Only use the character ids you were given.",
+    directive2.trim() ? `
+OPERATOR DIRECTIVE:
+${directive2.trim()}` : ""
   ].join(`
 `);
 }
@@ -1606,7 +1612,7 @@ function applyOffscreenResult(run, result, turnSeq) {
 
 // packages/core/src/resistance.ts
 var RESISTANCE_NOTE_CAP = 400;
-function resistanceSystemPrompt() {
+function resistanceSystemPrompt(directive2 = "") {
   return [
     AGENT_SENTINEL,
     "You are Psyche's conflict check, run fresh every turn. For each character below,",
@@ -1638,7 +1644,10 @@ function resistanceSystemPrompt() {
     "writer's job, working from your note, not yours. One to two sentences.",
     "",
     'Return ONLY JSON: { "<character_id>": "<note>", ... } \u2014 omit any character with',
-    "nothing to report."
+    "nothing to report.",
+    directive2.trim() ? `
+OPERATOR DIRECTIVE:
+${directive2.trim()}` : ""
   ].join(`
 `);
 }
@@ -1787,7 +1796,7 @@ async function runOffscreenStage(run, opts) {
     name: c.name,
     oneLineState: `${describeApproval(c.approval ?? 0).label} approval; feeling ${salientFeelings(c)}`
   }));
-  const castingCall = await quietJson(castingSystemPrompt(), castingUserContent(roster), {
+  const castingCall = await quietJson(castingSystemPrompt(opts.directive), castingUserContent(roster), {
     forceNoReasoning: true,
     signal: opts.signal,
     userId: opts.userId,
@@ -1800,7 +1809,7 @@ async function runOffscreenStage(run, opts) {
     if (!members.length)
       return null;
     try {
-      const call = await quietJson(unitSystemPrompt(opts.eventBudget), unitUserContent(members.map((c) => ({ c, feelings: salientFeelings(c) })), g.steer, onStageNames), { forceNoReasoning: false, signal: opts.signal, userId: opts.userId, connectionId: opts.connectionId });
+      const call = await quietJson(unitSystemPrompt(opts.eventBudget, opts.directive), unitUserContent(members.map((c) => ({ c, feelings: salientFeelings(c) })), g.steer, onStageNames), { forceNoReasoning: false, signal: opts.signal, userId: opts.userId, connectionId: opts.connectionId });
       logs.push({ ...call.log, label: `unit:${g.characterIds.join("+")}` });
       return parseUnitResult(extractJson(call.content), g.characterIds, opts.eventBudget);
     } catch (err) {
@@ -1828,7 +1837,7 @@ async function runResistanceStage(run, opts) {
   const present = Object.values(run.characters).filter((c) => c.present);
   if (!present.length)
     return null;
-  const call = await quietJson(resistanceSystemPrompt(), resistanceUserContent(present, opts.recentScene, opts.cardContext), {
+  const call = await quietJson(resistanceSystemPrompt(opts.directive), resistanceUserContent(present, opts.recentScene, opts.cardContext), {
     forceNoReasoning: false,
     signal: opts.signal,
     userId: opts.userId,
@@ -2025,6 +2034,7 @@ async function runAgentForChat(chatId, reply, userId) {
       try {
         const off = await runOffscreenStage(run, {
           eventBudget: config.offscreenEventBudget,
+          directive: config.directive,
           signal: AbortSignal.timeout(config.agentTimeoutMs),
           userId,
           connectionId: agentConn,
@@ -2044,6 +2054,7 @@ async function runAgentForChat(chatId, reply, userId) {
         const res = await runResistanceStage(run, {
           recentScene: transcript.slice(-6000),
           cardContext,
+          directive: config.directive,
           signal: AbortSignal.timeout(config.agentTimeoutMs),
           userId,
           connectionId: agentConn,

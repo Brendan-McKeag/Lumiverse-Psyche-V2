@@ -92,7 +92,7 @@ function setup(ctx) {
         <label class="ps-row"><input type="checkbox" class="ps-resist" /> Self-interested resistance (a fresh per-turn check on whether the player's ask cuts against who a character is — not a stored goal, re-decided every turn)</label>
         <div><span class="ps-muted">Engine rounds per turn</span><input type="number" class="ps-input ps-rounds" min="1" max="20" /></div>
         <div><span class="ps-muted">Decay rate (0–1, relax toward baseline)</span><input type="number" class="ps-input ps-decay" min="0" max="1" step="0.01" /></div>
-        <div><span class="ps-muted">Engine directive (optional)</span><textarea class="ps-ta ps-dir" placeholder="e.g. Slow-burn; keep characters guarded until trust is earned."></textarea></div>
+        <div><span class="ps-muted">Engine directive (optional) — shared by all three stages below (mind update, off-stage sim, resistance)</span><textarea class="ps-ta ps-dir" placeholder="e.g. Furry internet roleplay; slow-burn; keep characters guarded until trust is earned."></textarea></div>
         <div><span class="ps-muted">Engine model (separate connection for Psyche's bookkeeping)</span><select class="ps-input ps-conn"><option value="">Auto — last-used or default connection</option></select></div>
         <div class="ps-row"><button class="ps-btn ps-save-cfg">Save settings</button></div>
       </div>

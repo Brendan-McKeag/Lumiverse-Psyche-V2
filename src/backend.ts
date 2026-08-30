@@ -245,6 +245,7 @@ async function runAgentForChat(chatId: string, reply: string, userId?: string) {
       try {
         const off = await runOffscreenStage(run, {
           eventBudget: config.offscreenEventBudget,
+          directive: config.directive,
           signal: AbortSignal.timeout(config.agentTimeoutMs),
           userId,
           connectionId: agentConn,
@@ -266,6 +267,7 @@ async function runAgentForChat(chatId: string, reply: string, userId?: string) {
         const res = await runResistanceStage(run, {
           recentScene: transcript.slice(-6000),
           cardContext,
+          directive: config.directive,
           signal: AbortSignal.timeout(config.agentTimeoutMs),
           userId,
           connectionId: agentConn,

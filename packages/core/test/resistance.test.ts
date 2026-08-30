@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'bun:test'
-import { parseResistance, applyResistanceResult, resistanceUserContent, RESISTANCE_NOTE_CAP } from '../src/resistance'
+import {
+  resistanceSystemPrompt,
+  parseResistance,
+  applyResistanceResult,
+  resistanceUserContent,
+  RESISTANCE_NOTE_CAP,
+} from '../src/resistance'
 import { newCharacter, type CharacterState } from '../src/state'
 
 function fixturePresent(): CharacterState[] {
@@ -9,6 +15,13 @@ function fixturePresent(): CharacterState[] {
   b.present = true
   return [a, b]
 }
+
+describe('operator directive', () => {
+  test('reaches the resistance system prompt when provided, omitted otherwise', () => {
+    expect(resistanceSystemPrompt('Furry internet roleplay.')).toContain('Furry internet roleplay.')
+    expect(resistanceSystemPrompt()).not.toContain('OPERATOR DIRECTIVE')
+  })
+})
 
 describe('parseResistance', () => {
   test('drops ids not in presentIds', () => {

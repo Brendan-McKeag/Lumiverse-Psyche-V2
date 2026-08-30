@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  castingSystemPrompt,
   castingUserContent,
   parseCasting,
+  unitSystemPrompt,
   unitUserContent,
   parseUnitResult,
   mergeOffscreenResults,
@@ -23,6 +25,18 @@ function fixtureRun(): { run: RunState; a: CharacterState; b: CharacterState; on
   run.characters = { mara: a, tov: b, lena: onstage }
   return { run, a, b, onstage }
 }
+
+describe('operator directive', () => {
+  test('reaches both the casting and per-unit system prompts when provided', () => {
+    expect(castingSystemPrompt('Furry internet roleplay.')).toContain('Furry internet roleplay.')
+    expect(unitSystemPrompt(3, 'Furry internet roleplay.')).toContain('Furry internet roleplay.')
+  })
+
+  test('is omitted entirely when not provided', () => {
+    expect(castingSystemPrompt()).not.toContain('OPERATOR DIRECTIVE')
+    expect(unitSystemPrompt(3)).not.toContain('OPERATOR DIRECTIVE')
+  })
+})
 
 describe('parseCasting', () => {
   test('every input character ends up in exactly one group', () => {
