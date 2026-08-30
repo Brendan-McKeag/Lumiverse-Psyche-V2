@@ -85,7 +85,7 @@ function setup(ctx) {
         <label class="ps-row"><input type="checkbox" class="ps-en" /> Enabled</label>
         <label class="ps-row"><input type="checkbox" class="ps-texture" /> Human texture (energy-matched replies — flat moods read flat)</label>
         <label class="ps-row"><input type="checkbox" class="ps-offscreen" /> Off-stage simulation (absent characters live their own lives — costs extra LLM calls per turn)</label>
-        <div><span class="ps-muted">Off-stage event budget (events per group per turn)</span><input type="number" class="ps-input ps-offbudget" min="1" max="8" /></div>
+        <div><span class="ps-muted">Off-stage scenes per group per turn (1 = one full scene; rarely needs to be higher)</span><input type="number" class="ps-input ps-offbudget" min="1" max="8" /></div>
         <div><span class="ps-muted">Engine rounds per turn</span><input type="number" class="ps-input ps-rounds" min="1" max="20" /></div>
         <div><span class="ps-muted">Decay rate (0–1, relax toward baseline)</span><input type="number" class="ps-input ps-decay" min="0" max="1" step="0.01" /></div>
         <div><span class="ps-muted">Engine directive (optional)</span><textarea class="ps-ta ps-dir" placeholder="e.g. Slow-burn; keep characters guarded until trust is earned."></textarea></div>
@@ -366,7 +366,7 @@ ${t.response}`;
         enEl.checked = c.enabled !== false;
         textureEl.checked = c.humanTexture !== false;
         offscreenEl.checked = c.offscreenEnabled !== false;
-        offBudgetEl.value = String(c.offscreenEventBudget ?? 3);
+        offBudgetEl.value = String(c.offscreenEventBudget ?? 1);
         roundsEl.value = String(c.maxRounds ?? 8);
         decayEl.value = String(c.decayRate ?? 0.12);
         dirEl.value = c.directive ?? "";

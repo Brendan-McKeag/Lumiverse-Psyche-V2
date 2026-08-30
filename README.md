@@ -47,8 +47,9 @@ top of.
   character who isn't on-stage with the player still does something —
   a solitary beat, or a scene shared with another off-stage character —
   via a two-phase simulation: a cheap "casting" call decides who's alone and
-  who's together, then one richly-contexted call per group actually writes
-  what happened and moves their emotions/approval. A character only ever
+  who's together, then one richly-contexted call per group writes it as a
+  full scene — the same prose depth as an on-stage reply, not a summary
+  line — and moves their emotions/approval. A character only ever
   acts on what's in their own `knowledge` log or current state — never the
   on-stage transcript — so they only know what they've witnessed or been
   told. On by default, toggleable and budget-tunable in settings — it favors

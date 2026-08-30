@@ -61,11 +61,18 @@ export interface OffscreenResult {
   summaries: Record<string, string>
 }
 
-export const OFFSCREEN_EVENT_BUDGET = 3
+export const OFFSCREEN_EVENT_BUDGET = 1
 export const OFFSCREEN_FEELING_CLAMP = 5
 export const OFFSCREEN_APPROVAL_CLAMP = 5
 const KNOWLEDGE_CONTEXT_LINES = 8
 const SALIENT_THRESHOLD = 0.35
+// Generous safety ceilings, not targets — these are full scenes now, not log
+// lines. `summaries` deliberately stays much shorter: it's injected inline
+// into the on-stage directive the moment a character returns, so it has to
+// stay a continuity line, not a recap of the whole off-stage scene.
+const DESCRIPTION_CAP = 4000
+const KNOWLEDGE_LINE_CAP = 2500
+const SUMMARY_CAP = 250
 
 /** Top few salient feelings for a character, strongest first — used for the
  *  compact "how are they doing" line in both casting and per-unit prompts. */
@@ -154,18 +161,32 @@ export function parseCasting(raw: unknown, offStageIds: string[]): CastingResult
 export function unitSystemPrompt(eventBudget: number): string {
   return [
     AGENT_SENTINEL,
-    'You are running the rest of the world for one small slice of it. The character(s)',
-    'below are off-stage right now, living their own lives. Work out what they did.',
+    'You are the prose writer for this scene — exactly as much as you would be if the',
+    'player were sitting right here watching it. The character(s) below are off-stage',
+    'right now, living their own lives, and this is THEIR turn. Write it at full',
+    'strength: real setting, real sensory detail, real action, real dialogue if more',
+    'than one of them is present — the same craft and length you would bring to an',
+    'on-stage reply. A single flat summary sentence is a failure here, not economy.',
     '',
-    'Most of the time, very little is worth reporting — an empty events list is a',
-    'completely correct answer for a quiet character. Only report something when it is',
-    'the kind of beat their own current feelings and situation would actually produce.',
-    `At most ${eventBudget} event(s) total in this response.`,
+    'Most turns still call for something modest — not everyone lives an adventure every',
+    'moment — but "modest" means the STAKES are small, not that the WRITING is thin. A',
+    'quiet character doing a small, ordinary thing still gets a fully written scene of',
+    'it: how the room feels, what they notice, what they do, what runs through their',
+    'head. An empty events list is still the right answer when truly nothing is',
+    'happening (they are asleep, in transit, waiting) — but when you do write something,',
+    'commit to it as a real scene, a full paragraph or more.',
+    `Write ${eventBudget === 1 ? 'one such scene' : `up to ${eventBudget} such scenes`} this turn — one` +
+      ' well-developed scene is normal; only write more than one if this character',
+    'genuinely does several distinct, separated things.',
     '',
     'If there is more than one character below, they are TOGETHER right now — write ONE',
-    'event with all of them as participants, and give each of them their OWN',
-    'knowledgeFor line: the same moment as each of them would describe it, which is',
-    'rarely identical. Someone not listed below was not there and knows nothing of it.',
+    'shared scene with all of them as participants (dialogue between them is exactly',
+    'right here), then give each of them their OWN knowledgeFor entry: THEIR side of it,',
+    'in their own voice, as a real first-person paragraph — what they noticed, said, felt,',
+    'concluded. Two participants in the same scene should NOT produce identical',
+    'knowledgeFor text; write each one\'s account the way that person would actually tell',
+    'it, which is rarely identical to the other\'s. Someone not listed below was not',
+    'there and knows nothing of it.',
     '',
     'NONE OF THIS REACHES THE PLAYER DIRECTLY. It becomes private knowledge. The player',
     'finds out only if a character later chooses to tell them, or a future turn notices',
@@ -184,13 +205,16 @@ export function unitSystemPrompt(eventBudget: number): string {
     'Return ONLY JSON:',
     '{',
     '  "events": [',
-    '    { "description": "one plain past-tense sentence",',
+    '    { "description": "the full scene, written in real prose — a paragraph or more,',
+    '                       not a summary sentence",',
     '      "participants": ["<id>", ...],',
-    '      "knowledgeFor": { "<id>": "their own first-person-relevant line" } }',
+    '      "knowledgeFor": { "<id>": "that character\'s own first-person paragraph — their',
+    '                                 side of it, in their voice" } }',
     '  ],',
     '  "feelings": [ { "characterId": "<id>", "emotion": "<emotion key>", "intensity": 0.0, "reason": "why" } ],',
     '  "approvals": [ { "characterId": "<id>", "delta": 0, "reason": "why, tied to something they know about the player" } ],',
-    '  "summaries": { "<id>": "one line: what they\'ve been up to" }',
+    '  "summaries": { "<id>": "one line: what they\'ve been up to (this one stays SHORT —',
+    '                          it\'s injected inline once they\'re back on stage)" }',
     '}',
     '',
     'Feelings move gently — intensity roughly ±0.5 to ±2 unless something real and',
@@ -209,15 +233,17 @@ export function unitUserContent(
     '',
     steer ? `TOGETHER THIS TURN — ${steer}` : '',
     '',
-    ...members.map(({ c, feelings }) =>
-      [
+    ...members.map(({ c, feelings }) => {
+      const knowledge = (c.knowledge ?? []).slice(-KNOWLEDGE_CONTEXT_LINES)
+      return [
         `### ${c.id} — ${c.name}`,
         `  ${approvalLine(c)}`,
         `  feeling: ${feelings}`,
         `  recently up to: ${c.offscreenSummary?.trim() || '(nothing notable yet)'}`,
-        `  knows: ${(c.knowledge ?? []).slice(-KNOWLEDGE_CONTEXT_LINES).join('; ') || '(nothing notable)'}`,
-      ].join('\n'),
-    ),
+        '  knows (most recent last):',
+        knowledge.length ? knowledge.map((k) => `    - ${k}`).join('\n') : '    (nothing notable)',
+      ].join('\n')
+    }),
     '',
     'What happened? Return only the JSON.',
   ]
@@ -239,7 +265,7 @@ export function parseUnitResult(raw: unknown, memberIds: string[], eventBudget: 
   const eventCountFor = new Map<string, number>()
   for (const e of rawEvents) {
     const eo = e as { description?: unknown; participants?: unknown; knowledgeFor?: unknown }
-    const description = typeof eo.description === 'string' ? eo.description.trim().slice(0, 300) : ''
+    const description = typeof eo.description === 'string' ? eo.description.trim().slice(0, DESCRIPTION_CAP) : ''
     const participants = Array.isArray(eo.participants)
       ? (eo.participants as unknown[]).filter((x): x is string => typeof x === 'string' && known.has(x))
       : []
@@ -249,7 +275,7 @@ export function parseUnitResult(raw: unknown, memberIds: string[], eventBudget: 
       if (!known.has(id) || typeof text !== 'string' || !text.trim()) continue
       const used = eventCountFor.get(id) ?? 0
       if (used >= eventBudget) continue
-      knowledgeFor[id] = text.trim().slice(0, 300)
+      knowledgeFor[id] = text.trim().slice(0, KNOWLEDGE_LINE_CAP)
       eventCountFor.set(id, used + 1)
     }
     if (!description || !participants.length || !Object.keys(knowledgeFor).length) continue
@@ -286,7 +312,7 @@ export function parseUnitResult(raw: unknown, memberIds: string[], eventBudget: 
   const rawSummaries = o?.summaries && typeof o.summaries === 'object' ? (o.summaries as Record<string, unknown>) : {}
   for (const [id, text] of Object.entries(rawSummaries)) {
     if (!known.has(id) || typeof text !== 'string' || !text.trim()) continue
-    summaries[id] = text.trim().slice(0, 250)
+    summaries[id] = text.trim().slice(0, SUMMARY_CAP)
   }
 
   return { events, feelings, approvals, summaries }
