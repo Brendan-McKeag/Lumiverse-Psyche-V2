@@ -1,0 +1,17 @@
+{
+  "version": "0.1.0",
+  "name": "Psyche Core",
+  "identifier": "psyche-core",
+  "author": "Brendan-McKeag",
+  "description": "The core of Psyche: every non-player character carries a live 40-dimension affect vector (38 emotions plus bipolar valence and mood) whose extremes are exponentially hard to reach, and a durable approval ledger of their opinion of the player. Updated after every reply and injected into the next generation so characters actually feel what has happened to them.",
+  "permissions": [
+    "generation",
+    "chats",
+    "chat_mutation",
+    "characters",
+    "world_books"
+  ],
+  "entry_backend": "dist/backend.js",
+  "entry_frontend": "dist/frontend.js",
+  "minimum_lumiverse_version": "0.1.0"
+}

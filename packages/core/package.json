@@ -1,0 +1,16 @@
+{
+  "name": "@psyche/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./affect": "./src/affect.ts",
+    "./state": "./src/state.ts",
+    "./approval": "./src/approval.ts",
+    "./directive": "./src/directive.ts",
+    "./tools": "./src/tools.ts",
+    "./prompts": "./src/prompts.ts",
+    "./rubrics": "./src/rubrics.ts"
+  }
+}
