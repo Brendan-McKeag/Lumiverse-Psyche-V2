@@ -40,8 +40,16 @@ top of.
   the transcript and nudges feelings (`apply_stimulus`, occasionally
   `set_emotion`/`set_baseline`) and approval (`adjust_approval`) for every
   present character, can introduce supporting characters the story brings
-  in, and can log something a character will specifically remember
-  (`note_knowledge`).
+  in, can log something a character will specifically remember
+  (`note_knowledge`), and can record a newly-established fact about who a
+  character is (`update_canon`) — not on a quota, only when the current
+  scene genuinely suggests an undiscovered detail worth recording. Framed
+  as discovery, not inventory: the prompt is "given who they are and what's
+  happening right now, what fine detail comes to mind that would make for
+  compelling storytelling," not "fill in these categories of backstory."
+  Once recorded a fact is permanent — extended, never contradicted — which
+  is what keeps it from becoming a script: nothing in canon tells the
+  writer what to make happen next, only who someone already is.
 
 - **Every named character stays alive off-stage.** Each turn, every tracked
   character who isn't on-stage with the player still does something —
@@ -95,6 +103,7 @@ In the **Psyche** drawer tab: enable/disable, human texture (energy-matched
 replies), off-stage simulation (on/off + event budget), self-interested
 resistance (on/off), engine rounds per turn, decay rate, an optional engine
 directive (tone steering), reset run, per-character presence toggle, and
-direct editing of every emotion value + approval. The debug tab shows the
-raw request/response for each turn's mind update, off-stage simulation,
-resistance check, and injected directive.
+direct editing of every emotion value + approval, and a per-character canon
+editor (read/write — the engine grows it, you can seed or correct it too).
+The debug tab shows the raw request/response for each turn's mind update,
+off-stage simulation, resistance check, and injected directive.

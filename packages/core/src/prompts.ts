@@ -1,5 +1,6 @@
 import { EMOTIONS, genericScaleText } from './affect'
 import type { CharacterState, RunState } from './state'
+import { canonForInjection } from './state'
 import { describeApproval } from './approval'
 import { rubricTableText } from './rubrics'
 
@@ -163,8 +164,20 @@ export function updateSystemPrompt(directive: string, includeRubrics = true): st
     '    could later act on (a promise, a threat, something told to them in',
     '    confidence, a plan made), note_knowledge it for them — this is what lets',
     '    them act sensibly off-stage later. Do not log routine scene description.',
+    '  • GROW WHO THEY ARE (update_canon): given who this character already is',
+    '    and what\'s actually happening in the story right now, does an',
+    '    undiscovered fine detail come to mind — a habit, a memory, a piece of',
+    '    history, a physical tell — that would make for compelling storytelling',
+    '    and real character development? If so, record it. This is discovery,',
+    '    not a checklist: invent only when the scene genuinely suggests',
+    '    something, never to fill a quota every turn.',
     '  • Occasionally nudge a baseline (set_baseline) when a lasting change of',
     '    temperament is earned — not every turn.',
+    '',
+    'CANON IS LAW. Once a fact is recorded it is FIXED truth: never contradict',
+    'or quietly retcon it — only extend it, or rarely reword without changing',
+    'meaning. You may freely invent to fill blanks, but never contradict what',
+    'the card states about the primary character, or anything already in canon.',
     '',
     'TRACK EVERY NAMED CHARACTER — NOT JUST THE ONES CENTRAL TO THIS SCENE. If a',
     'character has a NAME, they are significant enough to have their own affect',
@@ -211,13 +224,15 @@ export function stateSnapshot(run: RunState): string {
   const chars = Object.values(run.characters)
   if (!chars.length) return '(no characters tracked yet)'
   return chars
-    .map((c) =>
-      [
+    .map((c) => {
+      const canon = canonForInjection(c.canon ?? '')
+      return [
         `### ${c.id} — ${c.name} [${c.isPrimary ? 'primary' : 'supporting'}, ${c.present ? 'present' : 'off-scene'}]`,
         `approval of the player: ${c.approval ?? 0} (${describeApproval(c.approval ?? 0).label})`,
         `feelings: ${emotionSummary(c)}`,
-      ].join('\n'),
-    )
+        canon ? `established canon (do not contradict):\n${canon}` : 'established canon: (none yet)',
+      ].join('\n')
+    })
     .join('\n\n')
 }
 

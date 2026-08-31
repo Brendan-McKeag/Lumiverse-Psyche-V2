@@ -73,6 +73,10 @@ function setup(ctx) {
 
         <h4 class="ps-h">Affect</h4>
         <div class="ps-emos"></div>
+
+        <h4 class="ps-h">Canon <span class="ps-muted">— established facts (fixed once written; grows as the story reveals more)</span></h4>
+        <textarea class="ps-ta ps-canon" style="min-height:120px" placeholder="Facts the engine invents/records as the story develops, or that you seed yourself."></textarea>
+        <div class="ps-row"><button class="ps-btn ps-save-canon">Save canon</button></div>
       </div>
 
       <div class="ps-section">
@@ -123,6 +127,7 @@ function setup(ctx) {
   const apprValEl = q(".ps-appr-val");
   const apprBandEl = q(".ps-appr-band");
   const resistanceEl = q(".ps-resistance");
+  const canonEl = q(".ps-canon");
   const offSummaryEl = q(".ps-off-summary");
   const offHEl = q(".ps-off-h");
   const offKnowledgeEl = q(".ps-off-knowledge");
@@ -187,6 +192,7 @@ function setup(ctx) {
     } else {
       resistanceEl.style.display = "none";
     }
+    canonEl.value = c.canon ?? "";
     const appr = c.approval ?? 0;
     apprLabelEl.textContent = "approval";
     const half = Math.min(50, Math.abs(appr) / 1000 * 50);
@@ -316,6 +322,11 @@ ${t.response}`;
     const v = Number(apprValEl.value);
     if (c && Number.isFinite(v))
       ctx.sendToBackend({ type: "set_approval", characterId: c.id, value: v });
+  });
+  q(".ps-save-canon").addEventListener("click", () => {
+    const c = selected();
+    if (c)
+      ctx.sendToBackend({ type: "save_canon", characterId: c.id, canon: canonEl.value });
   });
   q(".ps-reset").addEventListener("click", async () => {
     const { confirmed } = await ctx.ui.showConfirm({

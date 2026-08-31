@@ -1,4 +1,5 @@
 import type { CharacterState } from './state'
+import { canonForInjection } from './state'
 import { approvalLine } from './approval'
 import { groundedReadout } from './directive'
 import { AGENT_SENTINEL } from './prompts'
@@ -65,7 +66,17 @@ export function resistanceUserContent(present: CharacterState[], recentScene: st
     '"""',
     '',
     'CHARACTERS PRESENT:',
-    ...present.map((c) => [`### ${c.id} — ${c.name}`, `  ${approvalLine(c)}`, groundedReadout(c)].join('\n')),
+    ...present.map((c) => {
+      const canon = canonForInjection(c.canon ?? '')
+      return [
+        `### ${c.id} — ${c.name}`,
+        `  ${approvalLine(c)}`,
+        groundedReadout(c),
+        canon ? `  established canon:\n    ${canon.split('\n').join('\n    ')}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n')
+    }),
     '',
     'Run the check now. Return only the JSON.',
   ]

@@ -27,6 +27,7 @@ interface Character {
   offscreenSummary: string
   knowledge: string[]
   resistance: string
+  canon: string
   emotions: Emotion[]
 }
 interface Snapshot {
@@ -112,6 +113,10 @@ export function setup(ctx: SpindleFrontendContext) {
 
         <h4 class="ps-h">Affect</h4>
         <div class="ps-emos"></div>
+
+        <h4 class="ps-h">Canon <span class="ps-muted">— established facts (fixed once written; grows as the story reveals more)</span></h4>
+        <textarea class="ps-ta ps-canon" style="min-height:120px" placeholder="Facts the engine invents/records as the story develops, or that you seed yourself."></textarea>
+        <div class="ps-row"><button class="ps-btn ps-save-canon">Save canon</button></div>
       </div>
 
       <div class="ps-section">
@@ -163,6 +168,7 @@ export function setup(ctx: SpindleFrontendContext) {
   const apprValEl = q<HTMLInputElement>('.ps-appr-val')
   const apprBandEl = q<HTMLElement>('.ps-appr-band')
   const resistanceEl = q<HTMLElement>('.ps-resistance')
+  const canonEl = q<HTMLTextAreaElement>('.ps-canon')
   const offSummaryEl = q<HTMLElement>('.ps-off-summary')
   const offHEl = q<HTMLElement>('.ps-off-h')
   const offKnowledgeEl = q<HTMLElement>('.ps-off-knowledge')
@@ -254,6 +260,7 @@ export function setup(ctx: SpindleFrontendContext) {
     } else {
       resistanceEl.style.display = 'none'
     }
+    canonEl.value = c.canon ?? ''
 
     // Approval meter: the ±1000 window is where most play lives; the fill
     // saturates there while the input still takes the full ±10000 scale.
@@ -402,6 +409,10 @@ export function setup(ctx: SpindleFrontendContext) {
     const c = selected()
     const v = Number(apprValEl.value)
     if (c && Number.isFinite(v)) ctx.sendToBackend({ type: 'set_approval', characterId: c.id, value: v })
+  })
+  q('.ps-save-canon').addEventListener('click', () => {
+    const c = selected()
+    if (c) ctx.sendToBackend({ type: 'save_canon', characterId: c.id, canon: canonEl.value })
   })
   q('.ps-reset').addEventListener('click', async () => {
     const { confirmed } = await ctx.ui.showConfirm({

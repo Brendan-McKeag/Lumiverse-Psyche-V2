@@ -218,6 +218,14 @@ function pushKnowledge(c, entry) {
     return;
   c.knowledge = [...c.knowledge ?? [], e].slice(-KNOWLEDGE_CAP);
 }
+var CANON_INJECT_CAP = 3000;
+function canonForInjection(canon, cap = CANON_INJECT_CAP) {
+  const full = (canon ?? "").trim();
+  if (!full || full.length <= cap)
+    return full;
+  return `${full.slice(0, cap)}
+\u2026[canon truncated \u2014 ${full.length - cap} more chars not shown]`;
+}
 function ensurePrimary(run, id, name) {
   run.characterId = id;
   let primary = Object.values(run.characters).find((c) => c.isPrimary);
@@ -734,9 +742,17 @@ function characterBlock(c, humanTexture = true) {
       lines.push(`  delivery: ${d}`);
   if (c.offscreenSummary?.trim())
     lines.push(`  since you last saw them: ${c.offscreenSummary.trim()}`);
+  const canon = canonForInjection(c.canon ?? "");
+  if (canon) {
+    lines.push("  established canon (FIXED \u2014 honor exactly, never contradict):");
+    lines.push(indent(canon));
+  }
   return lines.join(`
 `);
 }
+var indent = (s, pad = "    ") => s.split(`
+`).map((l) => pad + l).join(`
+`);
 function buildDirective(run, opts = {}) {
   const present = Object.values(run.characters).filter((c) => c.present);
   if (!present.length)
@@ -971,6 +987,20 @@ var TOOL_SCHEMAS = [
       required: ["character_id", "text"],
       additionalProperties: false
     }
+  },
+  {
+    name: "update_canon",
+    description: "Record a newly-established fact about a character \u2014 invented to fill what the card leaves blank, or drawn out by what just happened in the scene. Use when something genuinely comes to mind that would make this character more specific and make for better storytelling \u2014 not as a per-turn quota. Once recorded it is FIXED: never contradict it later, only extend it. mode 'append' (default) adds a new fact; 'replace' reorganizes/condenses the whole canon without discarding established truth.",
+    parameters: {
+      type: "object",
+      properties: {
+        character_id: { type: "string" },
+        content: { type: "string", description: "The fact(s) to record (markdown ok)." },
+        mode: { type: "string", enum: ["append", "replace"], description: "append (default) or replace the whole canon." }
+      },
+      required: ["character_id", "content"],
+      additionalProperties: false
+    }
   }
 ];
 function find(run, id) {
@@ -1124,6 +1154,23 @@ ${feelings}`
       c.updatedAt = Date.now();
       return `${c.id} now knows: "${text}"`;
     }
+    case "update_canon": {
+      const c = find(run, str(args, "character_id"));
+      if (!c)
+        return `No character "${str(args, "character_id")}".`;
+      const content = str(args, "content").trim();
+      if (!content)
+        return "update_canon requires content.";
+      const mode = str(args, "mode", "append");
+      if (mode === "replace") {
+        c.canon = content;
+      } else {
+        c.canon = [(c.canon ?? "").trim(), content].filter(Boolean).join(`
+`);
+      }
+      c.updatedAt = Date.now();
+      return `${c.id} canon ${mode === "replace" ? "rewritten" : "extended"} (now ${(c.canon ?? "").length} chars).`;
+    }
     default:
       return `Unknown tool ${name}.`;
   }
@@ -1253,8 +1300,20 @@ function updateSystemPrompt(directive2, includeRubrics = true) {
     "    could later act on (a promise, a threat, something told to them in",
     "    confidence, a plan made), note_knowledge it for them \u2014 this is what lets",
     "    them act sensibly off-stage later. Do not log routine scene description.",
+    "  \u2022 GROW WHO THEY ARE (update_canon): given who this character already is",
+    "    and what's actually happening in the story right now, does an",
+    "    undiscovered fine detail come to mind \u2014 a habit, a memory, a piece of",
+    "    history, a physical tell \u2014 that would make for compelling storytelling",
+    "    and real character development? If so, record it. This is discovery,",
+    "    not a checklist: invent only when the scene genuinely suggests",
+    "    something, never to fill a quota every turn.",
     "  \u2022 Occasionally nudge a baseline (set_baseline) when a lasting change of",
     "    temperament is earned \u2014 not every turn.",
+    "",
+    "CANON IS LAW. Once a fact is recorded it is FIXED truth: never contradict",
+    "or quietly retcon it \u2014 only extend it, or rarely reword without changing",
+    "meaning. You may freely invent to fill blanks, but never contradict what",
+    "the card states about the primary character, or anything already in canon.",
     "",
     "TRACK EVERY NAMED CHARACTER \u2014 NOT JUST THE ONES CENTRAL TO THIS SCENE. If a",
     "character has a NAME, they are significant enough to have their own affect",
@@ -1298,12 +1357,17 @@ function stateSnapshot(run) {
   const chars = Object.values(run.characters);
   if (!chars.length)
     return "(no characters tracked yet)";
-  return chars.map((c) => [
-    `### ${c.id} \u2014 ${c.name} [${c.isPrimary ? "primary" : "supporting"}, ${c.present ? "present" : "off-scene"}]`,
-    `approval of the player: ${c.approval ?? 0} (${describeApproval(c.approval ?? 0).label})`,
-    `feelings: ${emotionSummary(c)}`
-  ].join(`
-`)).join(`
+  return chars.map((c) => {
+    const canon = canonForInjection(c.canon ?? "");
+    return [
+      `### ${c.id} \u2014 ${c.name} [${c.isPrimary ? "primary" : "supporting"}, ${c.present ? "present" : "off-scene"}]`,
+      `approval of the player: ${c.approval ?? 0} (${describeApproval(c.approval ?? 0).label})`,
+      `feelings: ${emotionSummary(c)}`,
+      canon ? `established canon (do not contradict):
+${canon}` : "established canon: (none yet)"
+    ].join(`
+`);
+  }).join(`
 
 `);
 }
@@ -1479,6 +1543,7 @@ function unitUserContent(members, steer, onStageNames) {
     "",
     ...members.map(({ c, feelings }) => {
       const knowledge = (c.knowledge ?? []).slice(-KNOWLEDGE_CONTEXT_LINES);
+      const canon = canonForInjection(c.canon ?? "");
       return [
         `### ${c.id} \u2014 ${c.name}`,
         `  ${approvalLine(c)}`,
@@ -1486,8 +1551,12 @@ function unitUserContent(members, steer, onStageNames) {
         `  recently up to: ${c.offscreenSummary?.trim() || "(nothing notable yet)"}`,
         "  knows (most recent last):",
         knowledge.length ? knowledge.map((k) => `    - ${k}`).join(`
-`) : "    (nothing notable)"
-      ].join(`
+`) : "    (nothing notable)",
+        canon ? `  established canon (do not contradict):
+    ${canon.split(`
+`).join(`
+    `)}` : ""
+      ].filter(Boolean).join(`
 `);
     }),
     "",
@@ -1662,8 +1731,19 @@ function resistanceUserContent(present, recentScene, cardContext) {
     '"""',
     "",
     "CHARACTERS PRESENT:",
-    ...present.map((c) => [`### ${c.id} \u2014 ${c.name}`, `  ${approvalLine(c)}`, groundedReadout(c)].join(`
-`)),
+    ...present.map((c) => {
+      const canon = canonForInjection(c.canon ?? "");
+      return [
+        `### ${c.id} \u2014 ${c.name}`,
+        `  ${approvalLine(c)}`,
+        groundedReadout(c),
+        canon ? `  established canon:
+    ${canon.split(`
+`).join(`
+    `)}` : ""
+      ].filter(Boolean).join(`
+`);
+    }),
     "",
     "Run the check now. Return only the JSON."
   ].filter(Boolean).join(`
@@ -2244,6 +2324,7 @@ function snapshotRun(run) {
     offscreenSummary: c.offscreenSummary ?? "",
     knowledge: c.knowledge ?? [],
     resistance: c.resistance ?? "",
+    canon: c.canon ?? "",
     emotions: EMOTIONS.map((def) => {
       const e = c.emotions[def.key] ?? { value: 0, baseline: 0 };
       return {
@@ -2374,6 +2455,19 @@ spindle.onFrontendMessage(async (payload, userId) => {
         const c = findChar(run, payload.characterId);
         if (c && typeof payload.value === "number" && Number.isFinite(payload.value)) {
           c.approval = Math.max(APPROVAL_MIN, Math.min(APPROVAL_MAX, Math.round(payload.value)));
+          await saveRun(run);
+        }
+        await sendState(chatId, userId);
+        break;
+      }
+      case "save_canon": {
+        const chatId = await activeChatId(payload.chatId, userId);
+        if (!chatId)
+          break;
+        const run = await loadRun(chatId);
+        const c = findChar(run, payload.characterId);
+        if (c && typeof payload.canon === "string") {
+          c.canon = payload.canon;
           await saveRun(run);
         }
         await sendState(chatId, userId);

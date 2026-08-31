@@ -162,6 +162,21 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'update_canon',
+    description:
+      "Record a newly-established fact about a character — invented to fill what the card leaves blank, or drawn out by what just happened in the scene. Use when something genuinely comes to mind that would make this character more specific and make for better storytelling — not as a per-turn quota. Once recorded it is FIXED: never contradict it later, only extend it. mode 'append' (default) adds a new fact; 'replace' reorganizes/condenses the whole canon without discarding established truth.",
+    parameters: {
+      type: 'object',
+      properties: {
+        character_id: { type: 'string' },
+        content: { type: 'string', description: 'The fact(s) to record (markdown ok).' },
+        mode: { type: 'string', enum: ['append', 'replace'], description: "append (default) or replace the whole canon." },
+      },
+      required: ['character_id', 'content'],
+      additionalProperties: false,
+    },
+  },
 ]
 
 /* ---------------------------- executors ---------------------------- */
@@ -308,6 +323,21 @@ export async function executeTool(run: RunState, name: string, args: Args): Prom
       pushKnowledge(c, text)
       c.updatedAt = Date.now()
       return `${c.id} now knows: "${text}"`
+    }
+
+    case 'update_canon': {
+      const c = find(run, str(args, 'character_id'))
+      if (!c) return `No character "${str(args, 'character_id')}".`
+      const content = str(args, 'content').trim()
+      if (!content) return 'update_canon requires content.'
+      const mode = str(args, 'mode', 'append')
+      if (mode === 'replace') {
+        c.canon = content
+      } else {
+        c.canon = [(c.canon ?? '').trim(), content].filter(Boolean).join('\n')
+      }
+      c.updatedAt = Date.now()
+      return `${c.id} canon ${mode === 'replace' ? 'rewritten' : 'extended'} (now ${(c.canon ?? '').length} chars).`
     }
 
     default:

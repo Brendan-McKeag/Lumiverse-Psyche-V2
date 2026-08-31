@@ -1,6 +1,6 @@
 import { EMOTION_BY_KEY, EMOTIONS, applyStimulus, describeValue } from './affect'
 import type { CharacterState, RunState } from './state'
-import { pushKnowledge } from './state'
+import { pushKnowledge, canonForInjection } from './state'
 import { approvalLine, APPROVAL_MIN, APPROVAL_MAX } from './approval'
 import { AGENT_SENTINEL } from './prompts'
 
@@ -237,6 +237,7 @@ export function unitUserContent(
     '',
     ...members.map(({ c, feelings }) => {
       const knowledge = (c.knowledge ?? []).slice(-KNOWLEDGE_CONTEXT_LINES)
+      const canon = canonForInjection(c.canon ?? '')
       return [
         `### ${c.id} — ${c.name}`,
         `  ${approvalLine(c)}`,
@@ -244,7 +245,10 @@ export function unitUserContent(
         `  recently up to: ${c.offscreenSummary?.trim() || '(nothing notable yet)'}`,
         '  knows (most recent last):',
         knowledge.length ? knowledge.map((k) => `    - ${k}`).join('\n') : '    (nothing notable)',
-      ].join('\n')
+        canon ? `  established canon (do not contradict):\n    ${canon.split('\n').join('\n    ')}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n')
     }),
     '',
     'What happened? Return only the JSON.',

@@ -1,5 +1,6 @@
 import { EMOTIONS, EMOTION_BY_KEY, EmotionDef, BehaviorClass, behaviorClass, describeValue } from './affect'
 import type { CharacterState, RunState } from './state'
+import { canonForInjection } from './state'
 import { approvalLine } from './approval'
 import { rubricFor } from './rubrics'
 
@@ -233,8 +234,16 @@ function characterBlock(c: CharacterState, humanTexture = true): string {
   if (humanTexture) for (const d of deliveryRegister(c)) lines.push(`  delivery: ${d}`)
   if (c.offscreenSummary?.trim()) lines.push(`  since you last saw them: ${c.offscreenSummary.trim()}`)
 
+  const canon = canonForInjection(c.canon ?? '')
+  if (canon) {
+    lines.push('  established canon (FIXED — honor exactly, never contradict):')
+    lines.push(indent(canon))
+  }
+
   return lines.join('\n')
 }
+
+const indent = (s: string, pad = '    ') => s.split('\n').map((l) => pad + l).join('\n')
 
 /** Options for building the injected directive. All optional; defaults preserve prior behavior. */
 export interface DirectiveOpts {

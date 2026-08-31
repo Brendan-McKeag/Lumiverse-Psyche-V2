@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { emptyRun, newCharacter, backfillEmotions, pushKnowledge, KNOWLEDGE_CAP } from '../src/state'
+import { emptyRun, newCharacter, backfillEmotions, pushKnowledge, KNOWLEDGE_CAP, canonForInjection } from '../src/state'
 
 describe('pushKnowledge', () => {
   test('appends entries and caps at KNOWLEDGE_CAP, dropping the oldest first', () => {
@@ -30,5 +30,24 @@ describe('backfillEmotions', () => {
 describe('emptyRun', () => {
   test('starts turnSeq at 0', () => {
     expect(emptyRun('chat-1').turnSeq).toBe(0)
+  })
+})
+
+describe('canonForInjection', () => {
+  test('returns the full string when under the cap', () => {
+    expect(canonForInjection('She grew up in Rook Harbor.', 100)).toBe('She grew up in Rook Harbor.')
+  })
+
+  test('empty/whitespace-only input yields empty output', () => {
+    expect(canonForInjection('', 100)).toBe('')
+    expect(canonForInjection('   ', 100)).toBe('')
+  })
+
+  test('truncates over the cap with a visible marker, not silently', () => {
+    const full = 'fact. '.repeat(100) // 600 chars
+    const capped = canonForInjection(full, 100)
+    expect(capped.length).toBeGreaterThan(100) // marker text pushes it back over
+    expect(capped).toContain('…[canon truncated —')
+    expect(capped.startsWith(full.slice(0, 100))).toBe(true)
   })
 })

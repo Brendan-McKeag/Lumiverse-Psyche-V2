@@ -65,6 +65,16 @@ export interface CharacterState {
    * checklist for a character to keep defending turn after turn.
    */
   resistance?: string
+  /**
+   * PERMANENT — established facts about who this character is: history,
+   * tastes, skills, relationships, quirks, speech habits. Invented to fill
+   * what the card leaves blank, grown as the story reveals or suggests more.
+   * Unlike `resistance`, this is never cleared — once written, a fact is
+   * fixed truth and only ever extended, never contradicted. Unlike a
+   * `goals` field, nothing here is a directive about what the character
+   * should do — it's backward-looking, not an agenda.
+   */
+  canon?: string
   updatedAt: number
 }
 
@@ -122,6 +132,16 @@ export function pushKnowledge(c: CharacterState, entry: string) {
   const e = entry.trim()
   if (!e) return
   c.knowledge = [...(c.knowledge ?? []), e].slice(-KNOWLEDGE_CAP)
+}
+
+/** Per-turn injection cap for canon; the stored value can grow past this. */
+export const CANON_INJECT_CAP = 3000
+
+/** Cap canon for injection, marking the cut visibly rather than silently truncating. */
+export function canonForInjection(canon: string, cap = CANON_INJECT_CAP): string {
+  const full = (canon ?? '').trim()
+  if (!full || full.length <= cap) return full
+  return `${full.slice(0, cap)}\n…[canon truncated — ${full.length - cap} more chars not shown]`
 }
 
 /**

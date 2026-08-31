@@ -484,6 +484,7 @@ function snapshotRun(run: RunState) {
     offscreenSummary: c.offscreenSummary ?? '',
     knowledge: c.knowledge ?? [],
     resistance: c.resistance ?? '',
+    canon: c.canon ?? '',
     emotions: EMOTIONS.map((def) => {
       const e = c.emotions[def.key] ?? { value: 0, baseline: 0 }
       return {
@@ -624,6 +625,19 @@ spindle.onFrontendMessage(async (payload: any, userId) => {
       const c = findChar(run, payload.characterId)
       if (c && typeof payload.value === 'number' && Number.isFinite(payload.value)) {
         c.approval = Math.max(APPROVAL_MIN, Math.min(APPROVAL_MAX, Math.round(payload.value)))
+        await saveRun(run)
+      }
+      await sendState(chatId, userId)
+      break
+    }
+
+    case 'save_canon': {
+      const chatId = await activeChatId(payload.chatId, userId)
+      if (!chatId) break
+      const run = await loadRun(chatId)
+      const c = findChar(run, payload.characterId)
+      if (c && typeof payload.canon === 'string') {
+        c.canon = payload.canon
         await saveRun(run)
       }
       await sendState(chatId, userId)
