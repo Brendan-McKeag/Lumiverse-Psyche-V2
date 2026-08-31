@@ -165,7 +165,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'update_canon',
     description:
-      "Record a newly-established fact about a character — invented to fill what the card leaves blank, or drawn out by what just happened in the scene. Use when something genuinely comes to mind that would make this character more specific and make for better storytelling — not as a per-turn quota. Once recorded it is FIXED: never contradict it later, only extend it. mode 'append' (default) adds a new fact; 'replace' reorganizes/condenses the whole canon without discarding established truth.",
+      "Record a newly-established fact about a character — invented to fill what the card leaves blank, or drawn out by what just happened in the scene. Weigh it against the card and the story so far first: an honest read of who this character actually is trumps simply going along with what the player said or implied — the fact you record can affirm, soften, qualify, or flatly negate a suggestion (e.g. \"doesn't actually enjoy X, despite seeming to\") when that's the truer read. Use when something genuinely comes to mind that would make this character more specific and make for better storytelling — not as a per-turn quota. Once recorded it is FIXED: never contradict a demonstrated fact later, only extend or refine it. mode 'append' (default) adds a new fact; 'replace' reorganizes, softens, or deepens the whole canon without discarding what the story has actually shown to be true.",
     parameters: {
       type: 'object',
       properties: {
