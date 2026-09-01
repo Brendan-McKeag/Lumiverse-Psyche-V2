@@ -1963,13 +1963,15 @@ async function runDirectorStage(run, opts) {
   ];
   const toolCalls = [];
   let finalContent = "";
+  let usedFallback = false;
   for (let round = 0;round < DIRECTOR_MAX_ROUNDS; round++) {
+    const reasoning = usedFallback ? { source: "off" } : { source: "custom", effort: opts.reasoningEffort };
     const res = await spindle.generate.quiet({
       type: "quiet",
       messages,
       tools: DIRECTOR_TOOLS,
       parameters: { temperature: 0.9 },
-      reasoning: { source: "custom", effort: opts.reasoningEffort },
+      reasoning,
       signal: opts.signal,
       userId: opts.userId,
       ...opts.connectionId ? { connection_id: opts.connectionId } : {}
@@ -1977,6 +1979,10 @@ async function runDirectorStage(run, opts) {
     const calls = res.tool_calls ?? [];
     if (calls.length === 0) {
       finalContent = (res.content ?? "").trim();
+      if (!finalContent && !usedFallback) {
+        usedFallback = true;
+        continue;
+      }
       break;
     }
     messages.push({
@@ -2010,7 +2016,7 @@ ${finalContent || "(empty \u2014 model returned no content)"}
 ` + `tool calls (${toolCalls.length}):
 ` + toolCalls.map((t, i) => `${i + 1}. ${t.tool} -> ${t.result}`).join(`
 `),
-    meta: `effort: ${opts.reasoningEffort} \xB7 connection: ${opts.connectionId || "prose default"}`
+    meta: `effort: ${opts.reasoningEffort}${usedFallback ? " (fell back to reasoning off \u2014 first attempt returned empty)" : ""}` + ` \xB7 connection: ${opts.connectionId || "prose default"}`
   });
   return { block, notes, toolCalls };
 }

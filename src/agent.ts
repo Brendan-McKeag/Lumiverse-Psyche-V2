@@ -296,14 +296,22 @@ export async function runDirectorStage(
 
   const toolCalls: { tool: string; result: string }[] = []
   let finalContent = ''
+  let usedFallback = false
 
   for (let round = 0; round < DIRECTOR_MAX_ROUNDS; round++) {
+    // A reasoning model can spend its entire turn thinking at high effort and
+    // come back with empty content and no tool calls — nothing left to
+    // actually answer with. If the configured-effort attempt does that once,
+    // retry immediately with reasoning forced off (the same fallback that
+    // reliably works for the mind-update stage) rather than silently giving
+    // up on the whole turn.
+    const reasoning = usedFallback ? ({ source: 'off' as const }) : ({ source: 'custom' as const, effort: opts.reasoningEffort as never })
     const res = (await spindle.generate.quiet({
       type: 'quiet',
       messages,
       tools: DIRECTOR_TOOLS,
       parameters: { temperature: 0.9 },
-      reasoning: { source: 'custom', effort: opts.reasoningEffort as never },
+      reasoning,
       signal: opts.signal,
       userId: opts.userId,
       ...(opts.connectionId ? { connection_id: opts.connectionId } : {}),
@@ -315,6 +323,10 @@ export async function runDirectorStage(
     const calls = res.tool_calls ?? []
     if (calls.length === 0) {
       finalContent = (res.content ?? '').trim()
+      if (!finalContent && !usedFallback) {
+        usedFallback = true
+        continue
+      }
       break
     }
 
@@ -349,7 +361,9 @@ export async function runDirectorStage(
       `parsed: ${Object.keys(notes).length}/${present.length} character(s) got a note\n\n` +
       `tool calls (${toolCalls.length}):\n` +
       toolCalls.map((t, i) => `${i + 1}. ${t.tool} -> ${t.result}`).join('\n'),
-    meta: `effort: ${opts.reasoningEffort} · connection: ${opts.connectionId || 'prose default'}`,
+    meta:
+      `effort: ${opts.reasoningEffort}${usedFallback ? ' (fell back to reasoning off — first attempt returned empty)' : ''}` +
+      ` · connection: ${opts.connectionId || 'prose default'}`,
   })
 
   return { block, notes, toolCalls }
