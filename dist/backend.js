@@ -2002,9 +2002,12 @@ async function runDirectorStage(run, opts) {
   opts.onTrace?.({
     at: Date.now(),
     request: serializeMessages(messages),
-    response: `notes: ${Object.keys(notes).length}/${present.length}
+    response: `raw model output (before parsing):
+${finalContent || "(empty \u2014 model returned no content)"}
 
-tool calls (${toolCalls.length}):
+` + `parsed: ${Object.keys(notes).length}/${present.length} character(s) got a note
+
+` + `tool calls (${toolCalls.length}):
 ` + toolCalls.map((t, i) => `${i + 1}. ${t.tool} -> ${t.result}`).join(`
 `),
     meta: `effort: ${opts.reasoningEffort} \xB7 connection: ${opts.connectionId || "prose default"}`

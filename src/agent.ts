@@ -345,7 +345,9 @@ export async function runDirectorStage(
     at: Date.now(),
     request: serializeMessages(messages),
     response:
-      `notes: ${Object.keys(notes).length}/${present.length}\n\ntool calls (${toolCalls.length}):\n` +
+      `raw model output (before parsing):\n${finalContent || '(empty — model returned no content)'}\n\n` +
+      `parsed: ${Object.keys(notes).length}/${present.length} character(s) got a note\n\n` +
+      `tool calls (${toolCalls.length}):\n` +
       toolCalls.map((t, i) => `${i + 1}. ${t.tool} -> ${t.result}`).join('\n'),
     meta: `effort: ${opts.reasoningEffort} · connection: ${opts.connectionId || 'prose default'}`,
   })
