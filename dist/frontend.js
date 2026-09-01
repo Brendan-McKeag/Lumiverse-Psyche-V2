@@ -30,7 +30,8 @@ function setup(ctx) {
     .ps-engine { font-size:12px; font-weight:600; padding:6px 10px; border-radius:var(--lumiverse-radius); border:1px solid var(--lumiverse-border); text-align:center; }
     .ps-engine.run { color:#e0a23c; border-color:#e0a23c; background:rgba(224,162,60,0.10); }
     .ps-engine.idle { color:#4fbf67; border-color:#4fbf67; background:rgba(79,191,103,0.07); }
-    .ps-resistance { font-size:12px; line-height:1.45; padding:8px 10px; border-left:2px solid #e0a23c; background:var(--lumiverse-fill-subtle); border-radius:var(--lumiverse-radius); }
+    .ps-director-note { font-size:12px; line-height:1.45; padding:8px 10px; border-left:2px solid #e0a23c; background:var(--lumiverse-fill-subtle); border-radius:var(--lumiverse-radius); white-space:pre-wrap; }
+    .ps-experimental { font-size:11px; line-height:1.4; padding:6px 8px; border-left:2px solid #e5534b; background:var(--lumiverse-fill-subtle); border-radius:var(--lumiverse-radius); }
     .ps-pre { white-space:pre-wrap; word-break:break-word; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:10.5px; line-height:1.4; max-height:360px; overflow:auto; padding:8px; background:var(--lumiverse-fill-subtle); border:1px solid var(--lumiverse-border); border-radius:var(--lumiverse-radius); }
   `);
   const tab = ctx.ui.registerDrawerTab({
@@ -57,7 +58,7 @@ function setup(ctx) {
           <label class="ps-row ps-muted"><input type="checkbox" class="ps-present" /> present</label>
         </div>
 
-        <div class="ps-resistance" style="display:none"></div>
+        <div class="ps-director-note" style="display:none"></div>
 
         <h4 class="ps-h">Approval <span class="ps-muted">— their opinion of you (−10000…+10000, never decays)</span></h4>
         <div class="ps-emo">
@@ -93,12 +94,32 @@ function setup(ctx) {
         <label class="ps-row"><input type="checkbox" class="ps-texture" /> Human texture (energy-matched replies — flat moods read flat)</label>
         <label class="ps-row"><input type="checkbox" class="ps-offscreen" /> Off-stage simulation (absent characters live their own lives — costs extra LLM calls per turn)</label>
         <div><span class="ps-muted">Off-stage scenes per group per turn (1 = one full scene; rarely needs to be higher)</span><input type="number" class="ps-input ps-offbudget" min="1" max="8" /></div>
-        <label class="ps-row"><input type="checkbox" class="ps-resist" /> Self-interested resistance (a fresh per-turn check on whether the player's ask cuts against who a character is — not a stored goal, re-decided every turn)</label>
         <div><span class="ps-muted">Engine rounds per turn</span><input type="number" class="ps-input ps-rounds" min="1" max="20" /></div>
         <div><span class="ps-muted">Decay rate (0–1, relax toward baseline)</span><input type="number" class="ps-input ps-decay" min="0" max="1" step="0.01" /></div>
-        <div><span class="ps-muted">Engine directive (optional) — shared by all three stages below (mind update, off-stage sim, resistance)</span><textarea class="ps-ta ps-dir" placeholder="e.g. Furry internet roleplay; slow-burn; keep characters guarded until trust is earned."></textarea></div>
+        <div><span class="ps-muted">Engine directive (optional) — shared by mind update, off-stage sim, and the Director</span><textarea class="ps-ta ps-dir" placeholder="e.g. Furry internet roleplay; slow-burn; keep characters guarded until trust is earned."></textarea></div>
         <div><span class="ps-muted">Engine model (separate connection for Psyche's bookkeeping)</span><select class="ps-input ps-conn"><option value="">Auto — last-used or default connection</option></select></div>
         <div class="ps-row"><button class="ps-btn ps-save-cfg">Save settings</button></div>
+      </div>
+
+      <div class="ps-section">
+        <h4 class="ps-h">Director <span class="ps-muted">— experimental</span></h4>
+        <div class="ps-experimental">Runs right before each reply, seeing the player's actual incoming message, and
+        can inject its own reasoning directly into that generation's prompt. This uses a host hook whose timeout
+        behavior isn't documented — it's designed to fail open (a slow or broken Director just means the reply goes
+        out without its input, never a lost reply), but test it yourself before trusting it. Off by default.</div>
+        <label class="ps-row"><input type="checkbox" class="ps-director-en" /> Enable the Director</label>
+        <div><span class="ps-muted">Reasoning effort ("ruminate as long as needed" = max)</span>
+          <select class="ps-input ps-director-effort">
+            <option value="auto">Auto</option>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+            <option value="max">Max</option>
+            <option value="xhigh">X-High</option>
+          </select>
+        </div>
+        <div><span class="ps-muted">Timeout (ms) — falls back to the unmodified prompt if exceeded</span><input type="number" class="ps-input ps-director-timeout" min="30000" max="600000" step="1000" /></div>
+        <div class="ps-row"><button class="ps-btn ps-director-save">Save settings</button></div>
       </div>
 
       <div class="ps-section">
@@ -106,7 +127,7 @@ function setup(ctx) {
         <div class="ps-row">
           <button class="ps-btn ps-dbg" data-k="update">Mind update</button>
           <button class="ps-btn ps-dbg" data-k="offscreen">Off-stage sim</button>
-          <button class="ps-btn ps-dbg" data-k="resistance">Resistance</button>
+          <button class="ps-btn ps-dbg" data-k="director">Director</button>
           <button class="ps-btn ps-dbg" data-k="injection">→ Injected directive</button>
           <button class="ps-btn ps-dbg-refresh" title="Re-fetch latest">↻</button>
         </div>
@@ -126,7 +147,7 @@ function setup(ctx) {
   const apprFillEl = q(".ps-appr-fill");
   const apprValEl = q(".ps-appr-val");
   const apprBandEl = q(".ps-appr-band");
-  const resistanceEl = q(".ps-resistance");
+  const directorNoteEl = q(".ps-director-note");
   const canonEl = q(".ps-canon");
   const offSummaryEl = q(".ps-off-summary");
   const offHEl = q(".ps-off-h");
@@ -136,7 +157,9 @@ function setup(ctx) {
   const textureEl = q(".ps-texture");
   const offscreenEl = q(".ps-offscreen");
   const offBudgetEl = q(".ps-offbudget");
-  const resistEl = q(".ps-resist");
+  const directorEnEl = q(".ps-director-en");
+  const directorEffortEl = q(".ps-director-effort");
+  const directorTimeoutEl = q(".ps-director-timeout");
   const roundsEl = q(".ps-rounds");
   const decayEl = q(".ps-decay");
   const dirEl = q(".ps-dir");
@@ -186,11 +209,11 @@ function setup(ctx) {
     detail.style.display = "flex";
     dName.textContent = `${c.name}${c.isPrimary ? " (primary)" : ""}`;
     presentEl.checked = c.present;
-    if (c.resistance?.trim()) {
-      resistanceEl.textContent = `Holding the line: ${c.resistance}`;
-      resistanceEl.style.display = "block";
+    if (c.directorNote?.trim()) {
+      directorNoteEl.textContent = `Director: ${c.directorNote}`;
+      directorNoteEl.style.display = "block";
     } else {
-      resistanceEl.style.display = "none";
+      directorNoteEl.style.display = "none";
     }
     canonEl.value = c.canon ?? "";
     const appr = c.approval ?? 0;
@@ -338,7 +361,7 @@ ${t.response}`;
     if (confirmed)
       ctx.sendToBackend({ type: "reset_run" });
   });
-  q(".ps-save-cfg").addEventListener("click", () => {
+  function saveAllConfig() {
     ctx.sendToBackend({
       type: "set_config",
       config: {
@@ -350,10 +373,14 @@ ${t.response}`;
         humanTexture: textureEl.checked,
         offscreenEnabled: offscreenEl.checked,
         offscreenEventBudget: Number(offBudgetEl.value),
-        resistanceEnabled: resistEl.checked
+        directorEnabled: directorEnEl.checked,
+        directorReasoningEffort: directorEffortEl.value,
+        directorTimeoutMs: Number(directorTimeoutEl.value)
       }
     });
-  });
+  }
+  q(".ps-save-cfg").addEventListener("click", saveAllConfig);
+  q(".ps-director-save").addEventListener("click", saveAllConfig);
   const unsub = ctx.onBackendMessage((raw) => {
     const p = raw;
     switch (p?.type) {
@@ -369,7 +396,7 @@ ${t.response}`;
       case "state_changed": {
         const failed = Array.isArray(p.stageErrors) ? p.stageErrors : [];
         const warn = failed.length ? `⚠ ${failed.map((f) => f.stage).join(", ")} failed — ` : "";
-        activity.textContent = `${warn}Last turn: ${p.edits} edits over ${p.rounds} rounds` + `${p.offscreenNote ? ` · offstage: ${p.offscreenNote}` : ""}` + `${p.resistanceNote ? ` · resistance: ${p.resistanceNote}` : ""}${p.note ? ` — ${p.note}` : ""}`;
+        activity.textContent = `${warn}Last turn: ${p.edits} edits over ${p.rounds} rounds` + `${p.offscreenNote ? ` · offstage: ${p.offscreenNote}` : ""}${p.note ? ` — ${p.note}` : ""}`;
         activity.style.color = failed.length ? "#e5534b" : "";
         requestState();
         requestDebug();
@@ -392,7 +419,9 @@ ${t.response}`;
         textureEl.checked = c.humanTexture !== false;
         offscreenEl.checked = c.offscreenEnabled !== false;
         offBudgetEl.value = String(c.offscreenEventBudget ?? 1);
-        resistEl.checked = c.resistanceEnabled !== false;
+        directorEnEl.checked = c.directorEnabled === true;
+        directorEffortEl.value = c.directorReasoningEffort ?? "max";
+        directorTimeoutEl.value = String(c.directorTimeoutMs ?? 240000);
         roundsEl.value = String(c.maxRounds ?? 8);
         decayEl.value = String(c.decayRate ?? 0.12);
         dirEl.value = c.directive ?? "";

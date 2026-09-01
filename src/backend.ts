@@ -1,4 +1,5 @@
 declare const spindle: import('lumiverse-spindle-types').SpindleAPI
+type LlmMessage = import('lumiverse-spindle-types').LlmMessageDTO
 
 import {
   RunState,
@@ -14,7 +15,7 @@ import {
   APPROVAL_MIN,
   APPROVAL_MAX,
 } from './run'
-import { runPsycheAgent, runOffscreenStage, runResistanceStage, StageTrace } from './agent'
+import { runPsycheAgent, runOffscreenStage, runDirectorStage, AGENT_SENTINEL, StageTrace } from './agent'
 import { EMOTIONS, EMOTION_BY_KEY, describeValue, relaxToward } from '@psyche/core/affect'
 import { OFFSCREEN_EVENT_BUDGET } from '@psyche/core/offscreen'
 
@@ -43,8 +44,17 @@ interface Config {
   offscreenEnabled: boolean
   /** max off-stage events simulated per group per turn (narrative pacing knob) */
   offscreenEventBudget: number
-  /** run the ephemeral per-turn resistance/conflict-check stage each turn */
-  resistanceEnabled: boolean
+  /**
+   * Runs the Director from a pre-generation prompt interceptor — sees the
+   * player's actual incoming message and injects fresh reasoning directly
+   * into that generation's prompt. Experimental: uses a host hook whose
+   * timeout behavior is undocumented, so it fails open (falls back to the
+   * unmodified prompt) on any error or timeout, and defaults OFF.
+   */
+  directorEnabled: boolean
+  /** reasoning effort for the Director's call — "ruminate as long as needed" */
+  directorReasoningEffort: string
+  directorTimeoutMs: number
 }
 
 const DEFAULT_CONFIG: Config = {
@@ -57,7 +67,9 @@ const DEFAULT_CONFIG: Config = {
   humanTexture: true,
   offscreenEnabled: true,
   offscreenEventBudget: OFFSCREEN_EVENT_BUDGET,
-  resistanceEnabled: true,
+  directorEnabled: false,
+  directorReasoningEffort: 'max',
+  directorTimeoutMs: 240000,
 }
 const CONFIG_PATH = 'config.json'
 
@@ -260,28 +272,6 @@ async function runAgentForChat(chatId: string, reply: string, userId?: string) {
       }
     }
 
-    // ── stage 3: ephemeral per-turn resistance (on-stage only) ──────────
-    let resistanceNote = ''
-    if (config.resistanceEnabled) {
-      try {
-        const res = await runResistanceStage(run, {
-          recentScene: transcript.slice(-6000),
-          cardContext,
-          directive: config.directive,
-          signal: AbortSignal.timeout(config.agentTimeoutMs),
-          userId,
-          connectionId: agentConn,
-          onTrace: (t) => (dbg.stages!.resistance = capTrace(t)),
-        })
-        resistanceNote = res ? `${res.touched} character(s) holding a line` : 'no one present'
-      } catch (err) {
-        const m = err instanceof Error && err.name === 'AbortError' ? 'timed out' : String(err)
-        resistanceNote = `resistance failed (${m})`
-        stageErrors.push({ stage: 'resistance', error: m })
-        spindle.log.error(`[psyche] resistance pass failed — ${m}`)
-      }
-    }
-
     await saveRun(run)
     await refreshInjection(chatId, userId)
 
@@ -311,14 +301,12 @@ async function runAgentForChat(chatId: string, reply: string, userId?: string) {
       edits: result.toolCalls.length,
       note: result.finalNote,
       offscreenNote,
-      resistanceNote,
       stageErrors,
     })
 
     spindle.log.info(
       `[psyche] ${char.name}: ${result.toolCalls.length} edits / ${result.rounds} rounds` +
-        (offscreenNote ? ` · offstage: ${offscreenNote}` : '') +
-        (resistanceNote ? ` · resistance: ${resistanceNote}` : ''),
+        (offscreenNote ? ` · offstage: ${offscreenNote}` : ''),
     )
   } catch (err) {
     const msg = err instanceof Error && err.name === 'AbortError' ? 'engine timed out' : String(err)
@@ -461,6 +449,133 @@ function registerInjectionInterceptor() {
   }
 }
 
+/* ----------------------------- the Director ------------------------- *
+ * The one Psyche stage that runs BEFORE a reply is written, via a
+ * pre-generation prompt interceptor: it sees the fully-assembled messages
+ * about to go to the LLM — including the player's actual incoming message —
+ * and can splice its own fresh reasoning directly into that prompt.
+ *
+ * This hook is genuinely new territory: unlike registerWorldInfoInterceptor
+ * (used above, with a documented 10s budget), registerInterceptor's timeout
+ * behavior is undocumented. Every path here fails OPEN — any guard miss,
+ * error, or timeout returns the messages unmodified, so a broken or slow
+ * Director can never cost the player a reply. Off by default; the operator
+ * turns it on deliberately.
+ * ------------------------------------------------------------------ */
+
+function textOfMessage(m: LlmMessage): string {
+  if (typeof m.content === 'string') return m.content
+  if (Array.isArray(m.content)) {
+    return (m.content as unknown[])
+      .map((p) => {
+        if (typeof p === 'string') return p
+        const o = p as { text?: string }
+        return typeof o?.text === 'string' ? o.text : ''
+      })
+      .filter(Boolean)
+      .join('\n')
+  }
+  return ''
+}
+
+/** The player's just-submitted message, plus everything before it as a transcript tail. */
+function extractPlayerTurn(messages: LlmMessage[]): { playerMessage: string; recentScene: string } {
+  let lastUserIndex = -1
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'user') {
+      lastUserIndex = i
+      break
+    }
+  }
+  const playerMessage = lastUserIndex >= 0 ? textOfMessage(messages[lastUserIndex]) : ''
+  const historyEnd = lastUserIndex < 0 ? messages.length : lastUserIndex
+  const scene = messages
+    .slice(0, historyEnd)
+    .filter((m) => m.role === 'user' || m.role === 'assistant')
+    .map((m) => `${m.role === 'user' ? 'PLAYER' : 'CHARACTER'}:\n${textOfMessage(m).trim()}`)
+    .filter((l) => l.trim() !== 'PLAYER:' && l.trim() !== 'CHARACTER:')
+    .join('\n\n')
+  return { playerMessage, recentScene: scene.slice(-6000) }
+}
+
+async function directorInterceptor(messages: LlmMessage[], context: unknown): Promise<LlmMessage[]> {
+  // Never intercept Psyche's own internal quiet calls (mind-update, off-stage,
+  // even the Director's own call) — every prompt Psyche builds itself opens
+  // with this sentinel. This guard holds regardless of whether the host
+  // actually routes spindle.generate.quiet() through this hook at all.
+  const first = messages[0]
+  if (first?.role === 'system' && typeof first.content === 'string' && first.content.includes(AGENT_SENTINEL)) {
+    return messages
+  }
+  if (!config.enabled || !config.directorEnabled) return messages
+
+  // `context`'s real shape isn't in the type declarations; the sibling
+  // world-info interceptor's context carries chatId/characterId/userId, so
+  // assume the same shape defensively and no-op if it doesn't hold.
+  const ctx = (context ?? {}) as { chatId?: string; characterId?: string; userId?: string; generationType?: string }
+  const chatId = typeof ctx.chatId === 'string' ? ctx.chatId : undefined
+  if (!chatId) return messages
+  if (ctx.generationType && ctx.generationType !== 'normal') return messages
+
+  const userId = ctx.userId
+  try {
+    const run = await loadRun(chatId)
+    if (!Object.values(run.characters).some((c) => c.present)) return messages
+
+    const char = await characterForChat(chatId, userId)
+    const fullChar = char ? await spindle.characters.get(char.id, userId).catch(() => null) : null
+    const cardContext = buildCardContext(fullChar)
+    const { playerMessage, recentScene } = extractPlayerTurn(messages)
+    const connectionId = await resolveQuietConnection(config.agentConnectionId, userId)
+
+    let trace: StageTrace | undefined
+    const result = await runDirectorStage(run, {
+      playerMessage,
+      recentScene,
+      cardContext,
+      reasoningEffort: config.directorReasoningEffort,
+      directive: config.directive,
+      signal: AbortSignal.timeout(config.directorTimeoutMs),
+      userId,
+      connectionId,
+      onTrace: (t) => (trace = capTrace(t)),
+    })
+
+    await saveRun(run) // persist even if no block resulted — update_canon/note_knowledge may still have fired
+    if (trace) {
+      try {
+        const prev = await loadDebug(chatId)
+        await spindle.storage.setJson(debugPath(chatId), { ...prev, stages: { ...(prev.stages ?? {}), director: trace } })
+      } catch {
+        /* debug trace is best-effort */
+      }
+    }
+    void sendState(chatId, userId, 'Director ruminated.') // fire-and-forget; must not delay this generation
+
+    if (!result?.block) return messages
+    const insertAt = (() => {
+      for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === 'user') return i
+      return messages.length
+    })()
+    const spliced = messages.slice()
+    spliced.splice(insertAt, 0, { role: 'system', content: result.block })
+    return spliced
+  } catch (err) {
+    const m = err instanceof Error && err.name === 'AbortError' ? 'timed out' : String(err)
+    spindle.log.error(`[psyche] director interceptor failed — ${m}`)
+    return messages
+  }
+}
+
+function registerDirectorInterceptor() {
+  try {
+    spindle.registerInterceptor(directorInterceptor, 50)
+    spindle.log.info('[psyche] director interceptor registered')
+  } catch (err) {
+    spindle.log.warn(`[psyche] director interceptor registration failed: ${String(err)}`)
+  }
+}
+
 /* --------------------------- frontend bridge ----------------------- */
 
 async function activeChatId(payloadChatId?: string, userId?: string): Promise<string | null> {
@@ -483,7 +598,7 @@ function snapshotRun(run: RunState) {
     approvalLabel: describeApproval(c.approval ?? 0).label,
     offscreenSummary: c.offscreenSummary ?? '',
     knowledge: c.knowledge ?? [],
-    resistance: c.resistance ?? '',
+    directorNote: c.directorNote ?? '',
     canon: c.canon ?? '',
     emotions: EMOTIONS.map((def) => {
       const e = c.emotions[def.key] ?? { value: 0, baseline: 0 }
@@ -542,7 +657,9 @@ spindle.onFrontendMessage(async (payload: any, userId) => {
         humanTexture: Boolean(payload.config?.humanTexture ?? config.humanTexture),
         offscreenEnabled: Boolean(payload.config?.offscreenEnabled ?? config.offscreenEnabled),
         offscreenEventBudget: clampInt(payload.config?.offscreenEventBudget ?? config.offscreenEventBudget, 1, 8),
-        resistanceEnabled: Boolean(payload.config?.resistanceEnabled ?? config.resistanceEnabled),
+        directorEnabled: Boolean(payload.config?.directorEnabled ?? config.directorEnabled),
+        directorReasoningEffort: String(payload.config?.directorReasoningEffort ?? config.directorReasoningEffort),
+        directorTimeoutMs: clampInt(payload.config?.directorTimeoutMs ?? config.directorTimeoutMs, 30000, 600000),
       }
       await saveConfig()
       spindle.sendToFrontend({ type: 'config', config }, userId)
@@ -666,6 +783,7 @@ function clampFloat(v: unknown, min: number, max: number): number {
 
 /* ------------------------------- boot ------------------------------ */
 registerInjectionInterceptor()
+registerDirectorInterceptor()
 
 ;(async () => {
   await loadConfig()

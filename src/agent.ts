@@ -17,7 +17,13 @@ import {
   applyOffscreenResult,
   type OffscreenResult,
 } from '@psyche/core/offscreen'
-import { resistanceSystemPrompt, resistanceUserContent, parseResistance, applyResistanceResult } from '@psyche/core/resistance'
+import {
+  directorSystemPrompt,
+  directorUserContent,
+  parseDirectorResult,
+  applyDirectorNotes,
+  formatDirectorBlock,
+} from '@psyche/core/director'
 
 /* ------------------------------------------------------------------ *
  * Psyche (core fork) — the mind engine (plugin transport)
@@ -247,48 +253,104 @@ export async function runOffscreenStage(
   return { events, touched: touched.size, groups: casting.groups.length }
 }
 
-/* --------------------------- resistance stage -------------------------- *
- * Fresh every turn, on-stage characters only: does the player's current
- * steering conflict with who this character has shown themselves to be so
- * far? No stored goals/persona are read or written — see resistance.ts.
+/* ------------------------------ Director -------------------------------- *
+ * The one stage that runs BEFORE a reply is written, not after — invoked
+ * from a pre-generation prompt interceptor (see src/backend.ts's
+ * directorInterceptor), seeing the player's actual incoming message rather
+ * than guessing at it. A short tool loop (update_canon/note_knowledge only,
+ * a few rounds at most) with reasoning left at whatever effort the operator
+ * configured — this is the one call in the whole engine explicitly meant to
+ * "ruminate for as long as it needs."
  * ------------------------------------------------------------------ */
 
-export async function runResistanceStage(
+const DIRECTOR_TOOLS = TOOL_SCHEMAS.filter((t) => t.name === 'update_canon' || t.name === 'note_knowledge')
+const DIRECTOR_MAX_ROUNDS = 3
+
+export interface DirectorStageResult {
+  block: string | null
+  notes: Record<string, string>
+  toolCalls: { tool: string; result: string }[]
+}
+
+export async function runDirectorStage(
   run: RunState,
   opts: {
+    playerMessage: string
     recentScene: string
     cardContext: string
+    reasoningEffort: string
     directive?: string
     signal?: AbortSignal
     userId?: string
     connectionId?: string
     onTrace?: TraceFn
   },
-): Promise<{ touched: number } | null> {
+): Promise<DirectorStageResult | null> {
   const present = Object.values(run.characters).filter((c) => c.present)
   if (!present.length) return null
 
-  const call = await quietJson(
-    resistanceSystemPrompt(opts.directive),
-    resistanceUserContent(present, opts.recentScene, opts.cardContext),
-    {
-      forceNoReasoning: false,
+  const messages: LlmMessage[] = [
+    { role: 'system', content: directorSystemPrompt(opts.directive) },
+    { role: 'user', content: directorUserContent(present, opts.playerMessage, opts.recentScene, opts.cardContext) },
+  ]
+
+  const toolCalls: { tool: string; result: string }[] = []
+  let finalContent = ''
+
+  for (let round = 0; round < DIRECTOR_MAX_ROUNDS; round++) {
+    const res = (await spindle.generate.quiet({
+      type: 'quiet',
+      messages,
+      tools: DIRECTOR_TOOLS,
+      parameters: { temperature: 0.9 },
+      reasoning: { source: 'custom', effort: opts.reasoningEffort as never },
       signal: opts.signal,
       userId: opts.userId,
-      connectionId: opts.connectionId,
-    },
-  )
-  const notes = parseResistance(extractJson(call.content), present.map((c) => c.id))
-  applyResistanceResult(present, notes)
+      ...(opts.connectionId ? { connection_id: opts.connectionId } : {}),
+    })) as {
+      content?: string
+      tool_calls?: { name: string; args: Record<string, unknown>; call_id: string }[]
+    }
+
+    const calls = res.tool_calls ?? []
+    if (calls.length === 0) {
+      finalContent = (res.content ?? '').trim()
+      break
+    }
+
+    messages.push({
+      role: 'assistant',
+      content: calls.map((c) => ({ type: 'tool_use' as const, id: c.call_id, name: c.name, input: c.args })),
+    })
+
+    const resultParts = []
+    for (const c of calls) {
+      let result: string
+      try {
+        result = await executeTool(run, c.name, c.args)
+      } catch (err) {
+        result = `Error in ${c.name}: ${String(err)}`
+      }
+      toolCalls.push({ tool: c.name, result })
+      resultParts.push({ type: 'tool_result' as const, tool_use_id: c.call_id, content: result })
+    }
+    messages.push({ role: 'user', content: resultParts })
+  }
+
+  const notes = parseDirectorResult(extractJson(finalContent), present.map((c) => c.id))
+  applyDirectorNotes(present, notes)
+  const block = formatDirectorBlock(present, notes)
 
   opts.onTrace?.({
     at: Date.now(),
-    request: call.log.request,
-    response: call.log.response,
-    meta: `${Object.keys(notes).length}/${present.length} holding a line · connection: ${opts.connectionId || 'prose default'}`,
+    request: serializeMessages(messages),
+    response:
+      `notes: ${Object.keys(notes).length}/${present.length}\n\ntool calls (${toolCalls.length}):\n` +
+      toolCalls.map((t, i) => `${i + 1}. ${t.tool} -> ${t.result}`).join('\n'),
+    meta: `effort: ${opts.reasoningEffort} · connection: ${opts.connectionId || 'prose default'}`,
   })
 
-  return { touched: Object.keys(notes).length }
+  return { block, notes, toolCalls }
 }
 
 export { AGENT_SENTINEL }

@@ -26,7 +26,7 @@ interface Character {
   approvalLabel: string
   offscreenSummary: string
   knowledge: string[]
-  resistance: string
+  directorNote: string
   canon: string
   emotions: Emotion[]
 }
@@ -67,7 +67,8 @@ export function setup(ctx: SpindleFrontendContext) {
     .ps-engine { font-size:12px; font-weight:600; padding:6px 10px; border-radius:var(--lumiverse-radius); border:1px solid var(--lumiverse-border); text-align:center; }
     .ps-engine.run { color:#e0a23c; border-color:#e0a23c; background:rgba(224,162,60,0.10); }
     .ps-engine.idle { color:#4fbf67; border-color:#4fbf67; background:rgba(79,191,103,0.07); }
-    .ps-resistance { font-size:12px; line-height:1.45; padding:8px 10px; border-left:2px solid #e0a23c; background:var(--lumiverse-fill-subtle); border-radius:var(--lumiverse-radius); }
+    .ps-director-note { font-size:12px; line-height:1.45; padding:8px 10px; border-left:2px solid #e0a23c; background:var(--lumiverse-fill-subtle); border-radius:var(--lumiverse-radius); white-space:pre-wrap; }
+    .ps-experimental { font-size:11px; line-height:1.4; padding:6px 8px; border-left:2px solid #e5534b; background:var(--lumiverse-fill-subtle); border-radius:var(--lumiverse-radius); }
     .ps-pre { white-space:pre-wrap; word-break:break-word; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:10.5px; line-height:1.4; max-height:360px; overflow:auto; padding:8px; background:var(--lumiverse-fill-subtle); border:1px solid var(--lumiverse-border); border-radius:var(--lumiverse-radius); }
   `)
 
@@ -97,7 +98,7 @@ export function setup(ctx: SpindleFrontendContext) {
           <label class="ps-row ps-muted"><input type="checkbox" class="ps-present" /> present</label>
         </div>
 
-        <div class="ps-resistance" style="display:none"></div>
+        <div class="ps-director-note" style="display:none"></div>
 
         <h4 class="ps-h">Approval <span class="ps-muted">— their opinion of you (−10000…+10000, never decays)</span></h4>
         <div class="ps-emo">
@@ -133,12 +134,32 @@ export function setup(ctx: SpindleFrontendContext) {
         <label class="ps-row"><input type="checkbox" class="ps-texture" /> Human texture (energy-matched replies — flat moods read flat)</label>
         <label class="ps-row"><input type="checkbox" class="ps-offscreen" /> Off-stage simulation (absent characters live their own lives — costs extra LLM calls per turn)</label>
         <div><span class="ps-muted">Off-stage scenes per group per turn (1 = one full scene; rarely needs to be higher)</span><input type="number" class="ps-input ps-offbudget" min="1" max="8" /></div>
-        <label class="ps-row"><input type="checkbox" class="ps-resist" /> Self-interested resistance (a fresh per-turn check on whether the player's ask cuts against who a character is — not a stored goal, re-decided every turn)</label>
         <div><span class="ps-muted">Engine rounds per turn</span><input type="number" class="ps-input ps-rounds" min="1" max="20" /></div>
         <div><span class="ps-muted">Decay rate (0–1, relax toward baseline)</span><input type="number" class="ps-input ps-decay" min="0" max="1" step="0.01" /></div>
-        <div><span class="ps-muted">Engine directive (optional) — shared by all three stages below (mind update, off-stage sim, resistance)</span><textarea class="ps-ta ps-dir" placeholder="e.g. Furry internet roleplay; slow-burn; keep characters guarded until trust is earned."></textarea></div>
+        <div><span class="ps-muted">Engine directive (optional) — shared by mind update, off-stage sim, and the Director</span><textarea class="ps-ta ps-dir" placeholder="e.g. Furry internet roleplay; slow-burn; keep characters guarded until trust is earned."></textarea></div>
         <div><span class="ps-muted">Engine model (separate connection for Psyche's bookkeeping)</span><select class="ps-input ps-conn"><option value="">Auto — last-used or default connection</option></select></div>
         <div class="ps-row"><button class="ps-btn ps-save-cfg">Save settings</button></div>
+      </div>
+
+      <div class="ps-section">
+        <h4 class="ps-h">Director <span class="ps-muted">— experimental</span></h4>
+        <div class="ps-experimental">Runs right before each reply, seeing the player's actual incoming message, and
+        can inject its own reasoning directly into that generation's prompt. This uses a host hook whose timeout
+        behavior isn't documented — it's designed to fail open (a slow or broken Director just means the reply goes
+        out without its input, never a lost reply), but test it yourself before trusting it. Off by default.</div>
+        <label class="ps-row"><input type="checkbox" class="ps-director-en" /> Enable the Director</label>
+        <div><span class="ps-muted">Reasoning effort ("ruminate as long as needed" = max)</span>
+          <select class="ps-input ps-director-effort">
+            <option value="auto">Auto</option>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+            <option value="max">Max</option>
+            <option value="xhigh">X-High</option>
+          </select>
+        </div>
+        <div><span class="ps-muted">Timeout (ms) — falls back to the unmodified prompt if exceeded</span><input type="number" class="ps-input ps-director-timeout" min="30000" max="600000" step="1000" /></div>
+        <div class="ps-row"><button class="ps-btn ps-director-save">Save settings</button></div>
       </div>
 
       <div class="ps-section">
@@ -146,7 +167,7 @@ export function setup(ctx: SpindleFrontendContext) {
         <div class="ps-row">
           <button class="ps-btn ps-dbg" data-k="update">Mind update</button>
           <button class="ps-btn ps-dbg" data-k="offscreen">Off-stage sim</button>
-          <button class="ps-btn ps-dbg" data-k="resistance">Resistance</button>
+          <button class="ps-btn ps-dbg" data-k="director">Director</button>
           <button class="ps-btn ps-dbg" data-k="injection">→ Injected directive</button>
           <button class="ps-btn ps-dbg-refresh" title="Re-fetch latest">↻</button>
         </div>
@@ -167,7 +188,7 @@ export function setup(ctx: SpindleFrontendContext) {
   const apprFillEl = q<HTMLElement>('.ps-appr-fill')
   const apprValEl = q<HTMLInputElement>('.ps-appr-val')
   const apprBandEl = q<HTMLElement>('.ps-appr-band')
-  const resistanceEl = q<HTMLElement>('.ps-resistance')
+  const directorNoteEl = q<HTMLElement>('.ps-director-note')
   const canonEl = q<HTMLTextAreaElement>('.ps-canon')
   const offSummaryEl = q<HTMLElement>('.ps-off-summary')
   const offHEl = q<HTMLElement>('.ps-off-h')
@@ -177,7 +198,9 @@ export function setup(ctx: SpindleFrontendContext) {
   const textureEl = q<HTMLInputElement>('.ps-texture')
   const offscreenEl = q<HTMLInputElement>('.ps-offscreen')
   const offBudgetEl = q<HTMLInputElement>('.ps-offbudget')
-  const resistEl = q<HTMLInputElement>('.ps-resist')
+  const directorEnEl = q<HTMLInputElement>('.ps-director-en')
+  const directorEffortEl = q<HTMLSelectElement>('.ps-director-effort')
+  const directorTimeoutEl = q<HTMLInputElement>('.ps-director-timeout')
   const roundsEl = q<HTMLInputElement>('.ps-rounds')
   const decayEl = q<HTMLInputElement>('.ps-decay')
   const dirEl = q<HTMLTextAreaElement>('.ps-dir')
@@ -254,11 +277,11 @@ export function setup(ctx: SpindleFrontendContext) {
     dName.textContent = `${c.name}${c.isPrimary ? ' (primary)' : ''}`
     presentEl.checked = c.present
 
-    if (c.resistance?.trim()) {
-      resistanceEl.textContent = `Holding the line: ${c.resistance}`
-      resistanceEl.style.display = 'block'
+    if (c.directorNote?.trim()) {
+      directorNoteEl.textContent = `Director: ${c.directorNote}`
+      directorNoteEl.style.display = 'block'
     } else {
-      resistanceEl.style.display = 'none'
+      directorNoteEl.style.display = 'none'
     }
     canonEl.value = c.canon ?? ''
 
@@ -423,7 +446,7 @@ export function setup(ctx: SpindleFrontendContext) {
     })
     if (confirmed) ctx.sendToBackend({ type: 'reset_run' })
   })
-  q('.ps-save-cfg').addEventListener('click', () => {
+  function saveAllConfig() {
     ctx.sendToBackend({
       type: 'set_config',
       config: {
@@ -435,10 +458,14 @@ export function setup(ctx: SpindleFrontendContext) {
         humanTexture: textureEl.checked,
         offscreenEnabled: offscreenEl.checked,
         offscreenEventBudget: Number(offBudgetEl.value),
-        resistanceEnabled: resistEl.checked,
+        directorEnabled: directorEnEl.checked,
+        directorReasoningEffort: directorEffortEl.value,
+        directorTimeoutMs: Number(directorTimeoutEl.value),
       },
     })
-  })
+  }
+  q('.ps-save-cfg').addEventListener('click', saveAllConfig)
+  q('.ps-director-save').addEventListener('click', saveAllConfig)
 
   const unsub = ctx.onBackendMessage((raw: unknown) => {
     const p = raw as any
@@ -455,8 +482,7 @@ export function setup(ctx: SpindleFrontendContext) {
         const warn = failed.length ? `⚠ ${failed.map((f: { stage: string }) => f.stage).join(', ')} failed — ` : ''
         activity.textContent =
           `${warn}Last turn: ${p.edits} edits over ${p.rounds} rounds` +
-          `${p.offscreenNote ? ` · offstage: ${p.offscreenNote}` : ''}` +
-          `${p.resistanceNote ? ` · resistance: ${p.resistanceNote}` : ''}${p.note ? ` — ${p.note}` : ''}`
+          `${p.offscreenNote ? ` · offstage: ${p.offscreenNote}` : ''}${p.note ? ` — ${p.note}` : ''}`
         activity.style.color = failed.length ? '#e5534b' : ''
         requestState()
         requestDebug()
@@ -478,7 +504,9 @@ export function setup(ctx: SpindleFrontendContext) {
         textureEl.checked = c.humanTexture !== false
         offscreenEl.checked = c.offscreenEnabled !== false
         offBudgetEl.value = String(c.offscreenEventBudget ?? 1)
-        resistEl.checked = c.resistanceEnabled !== false
+        directorEnEl.checked = c.directorEnabled === true
+        directorEffortEl.value = c.directorReasoningEffort ?? 'max'
+        directorTimeoutEl.value = String(c.directorTimeoutMs ?? 240000)
         roundsEl.value = String(c.maxRounds ?? 8)
         decayEl.value = String(c.decayRate ?? 0.12)
         dirEl.value = c.directive ?? ''

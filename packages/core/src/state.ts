@@ -58,18 +58,20 @@ export interface CharacterState {
    */
   lastOffscreenAt?: number
   /**
-   * EPHEMERAL — what this character is not giving away THIS turn, and a brief
-   * why. Regenerated fresh every turn the resistance stage runs, and cleared
-   * (not left stale) on any turn it finds nothing to withhold. This is
-   * deliberately NOT a persisted identity trait — there is no stored
-   * checklist for a character to keep defending turn after turn.
+   * EPHEMERAL — the Director's most recent read of how this character is
+   * receiving the moment: inclinations, hard lines, negotiable ground.
+   * Computed fresh right before each reply (from a pre-generation prompt
+   * interceptor, not the post-hoc pipeline) and kept here only for panel/
+   * debug visibility — it is never re-injected from stored state, since it
+   * already reached the prompt directly for the exact generation it was
+   * computed for. Cleared (not left stale) on any turn with nothing to note.
    */
-  resistance?: string
+  directorNote?: string
   /**
    * PERMANENT — established facts about who this character is: history,
    * tastes, skills, relationships, quirks, speech habits. Invented to fill
    * what the card leaves blank, grown as the story reveals or suggests more.
-   * Unlike `resistance`, this is never cleared — once written, a fact is
+   * Unlike `directorNote`, this is never cleared — once written, a fact is
    * fixed truth and only ever extended, never contradicted. Unlike a
    * `goals` field, nothing here is a directive about what the character
    * should do — it's backward-looking, not an agenda.

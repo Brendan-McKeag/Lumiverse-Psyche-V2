@@ -691,16 +691,6 @@ function overrideTier(value, kind) {
     return "intense";
   return null;
 }
-function topOverrideTier(c) {
-  let best = null;
-  const rank = { intense: 1, overwhelming: 2, "all-consuming": 3 };
-  for (const def of EMOTIONS) {
-    const t = overrideTier(v(c, def.key), def.kind);
-    if (t && (!best || rank[t] > rank[best]))
-      best = t;
-  }
-  return best;
-}
 function overrideDirective(c) {
   const rows = EMOTIONS.map((def) => ({ def, val: v(c, def.key), tier: overrideTier(v(c, def.key), def.kind) })).filter((r) => r.tier).sort((a, b) => Math.abs(b.val) - Math.abs(a.val));
   if (!rows.length)
@@ -729,9 +719,6 @@ function characterBlock(c, humanTexture = true) {
   const override = overrideDirective(c);
   if (override)
     lines.push(override);
-  const strongOverride = topOverrideTier(c) === "overwhelming" || topOverrideTier(c) === "all-consuming";
-  if (!strongOverride && c.resistance?.trim())
-    lines.push(`Holding the line: ${c.resistance.trim()}`);
   lines.push("");
   lines.push("Underneath (embody \u2014 do not narrate or name any of this):");
   lines.push(groundedReadout(c));
@@ -1693,64 +1680,87 @@ function applyOffscreenResult(run, result, turnSeq) {
   return { touched, events: result.events.length };
 }
 
-// packages/core/src/resistance.ts
-var RESISTANCE_NOTE_CAP = 400;
-function resistanceSystemPrompt(directive2 = "") {
+// packages/core/src/director.ts
+var DIRECTOR_NOTE_CAP = 1600;
+function directorSystemPrompt(directive2 = "") {
   return [
     AGENT_SENTINEL,
-    "You are Psyche's conflict check, run fresh every turn. For each character below,",
-    "read the recent scene and decide: is the player's CURRENT message asking for or",
-    "steering toward something that cuts against who this character has shown",
-    "themselves to be so far \u2014 their manner, their values, what they clearly want \u2014",
-    "given the card and the story up to now?",
+    "You are the Director \u2014 the deepest, most deliberate reasoning pass in this",
+    "engine, run immediately before the next reply is written. Take as long as you",
+    "genuinely need. Think like a human game master privately working out how each",
+    "character actually receives this exact moment \u2014 not like a checklist being",
+    "filled in. Resist the pull toward the safest, most predictable read: a",
+    "compelling character sometimes hesitates, surprises, or reacts in a way the",
+    "player didn't expect, as long as it is true to who they are.",
     "",
-    "You have NO goals list, NO persona sheet, and NO stored profile for these",
-    "characters. That is deliberate. Read who they are the same way you would if you",
-    "were about to write their next line yourself: from the card, and from how they",
-    "have actually behaved in the scene so far. Do not invent a fixed trait to defend \u2014",
-    "judge only what THIS moment, in THIS scene, would plausibly cost them.",
+    "For each character listed below, work out:",
+    "  \u2022 THEIR GENUINE INCLINATIONS AND THOUGHT PROCESS right now \u2014 what this",
+    "    specific moment stirs up for them, reasoned from their canon, their",
+    "    current feelings, and how they have actually behaved so far, not from a",
+    "    generic personality summary.",
+    "  \u2022 HARD LINES \u2014 anything they would flatly not do, allow, or accept, given",
+    "    who they are. Name it plainly when the player's message brushes against",
+    "    one.",
+    "  \u2022 NEGOTIABLE GROUND \u2014 where there is real room to move, and roughly what it",
+    "    would take to move them. This is the common case, not the exception: most",
+    "    of who someone is isn't a hard line.",
+    "  \u2022 UNDISCOVERED TERRITORY \u2014 anything about them that hasn't been established",
+    "    yet and that this moment makes fertile ground to explore. Invent it, and",
+    "    call update_canon to record it when it is concrete enough to be worth",
+    "    keeping \u2014 not a quota, only when the scene genuinely opens the door. Use",
+    "    note_knowledge for anything a present character would specifically",
+    "    remember going forward.",
     "",
-    "SCALE YOUR DEFAULT BY APPROVAL (given per character below):",
-    "  \u2022 At neutral-to-low approval, bias toward finding real friction. Do not let a",
-    "    character hand over agreement, warmth, or ground in the scene just because it",
-    "    is convenient or keeps things moving \u2014 check whether it actually serves them.",
-    "  \u2022 At high approval (devoted or above), the bias FLIPS: compliance on ordinary",
-    "    asks is already earned. Do not manufacture reluctance a trusted character has",
-    "    no real reason to feel \u2014 that is an equal and opposite failure.",
-    "  \u2022 Most turns, for most characters, the honest answer is nothing conflicts.",
-    "    Omitting a character (or returning an empty note) is the expected, common",
-    "    result \u2014 do not invent friction out of habit.",
+    "HONEST, NOT COMPLIANT. What the player says, wants, or implies is a data point,",
+    "never automatic truth. Weigh it against the card and everything that has",
+    "actually happened; when the honest read diverges from what was suggested, say",
+    "so \u2014 including the opposite of what was implied, when that is the truer read.",
     "",
-    "WHAT YOU WRITE IS A BOUNDARY, NOT A SCRIPT. Say what the character is not giving",
-    "away \u2014 warmth, agreement, trust, ground in the scene \u2014 and a brief why. NEVER write",
-    "the specific line, action, or plot beat they use to hold it; that is the prose",
-    "writer's job, working from your note, not yours. One to two sentences.",
+    "WHAT YOU WRITE IS A BOUNDARY AND A COMPASS, NOT A SCRIPT. Describe pulls,",
+    "limits, and openings \u2014 never the specific line, action, or plot beat used to",
+    "act on them. That is the prose writer's job, working from your read of the",
+    "moment, not yours to decide for them.",
     "",
-    'Return ONLY JSON: { "<character_id>": "<note>", ... } \u2014 omit any character with',
-    "nothing to report.",
+    "You may call update_canon and note_knowledge as many times as genuinely",
+    "warranted while you think this through, then finish with your notes. In your",
+    "FINAL response \u2014 after any tool calls, with no further tool calls in it \u2014 return",
+    'ONLY JSON: { "<character_id>": "<your note for them>", ... }. Write a note for',
+    "every character listed, even a brief one when the moment is genuinely simple \u2014",
+    "depth should match what the moment calls for, not be padded to a fixed length.",
     directive2.trim() ? `
 OPERATOR DIRECTIVE:
 ${directive2.trim()}` : ""
   ].join(`
 `);
 }
-function resistanceUserContent(present, recentScene, cardContext) {
+function directorUserContent(present, playerMessage, recentScene, cardContext) {
   return [
     cardContext ? ["PRIMARY CHARACTER CARD (source of truth for who they are):", '"""', cardContext, '"""', ""].join(`
 `) : "",
-    "THE RECENT SCENE (most recent last \u2014 the player's latest message is what you are",
-    "checking against):",
+    "THE STORY SO FAR (most recent last):",
     '"""',
     recentScene.trim() || "(the scene has just begun)",
+    '"""',
+    "",
+    "THE PLAYER JUST SAID/DID \u2014 this is the specific moment you are thinking",
+    "through:",
+    '"""',
+    playerMessage.trim() || "(nothing yet \u2014 this is the opening of the scene)",
     '"""',
     "",
     "CHARACTERS PRESENT:",
     ...present.map((c) => {
       const canon = canonForInjection(c.canon ?? "");
+      const override = overrideDirective(c);
       return [
         `### ${c.id} \u2014 ${c.name}`,
         `  ${approvalLine(c)}`,
         groundedReadout(c),
+        override ? `  ${override.split(`
+`).join(`
+  `)}
+  (an overriding state like this runs them \u2014 your note should say how they
+  are being carried by it, not offer nuanced negotiation they don't have room for)` : "",
         canon ? `  established canon:
     ${canon.split(`
 `).join(`
@@ -1759,11 +1769,11 @@ function resistanceUserContent(present, recentScene, cardContext) {
 `);
     }),
     "",
-    "Run the check now. Return only the JSON."
+    "Think it through now, then return the JSON."
   ].filter(Boolean).join(`
 `);
 }
-function parseResistance(raw, presentIds) {
+function parseDirectorResult(raw, presentIds) {
   const known = new Set(presentIds);
   const out = {};
   if (!raw || typeof raw !== "object")
@@ -1771,14 +1781,28 @@ function parseResistance(raw, presentIds) {
   for (const [id, text] of Object.entries(raw)) {
     if (!known.has(id) || typeof text !== "string" || !text.trim())
       continue;
-    out[id] = text.trim().slice(0, RESISTANCE_NOTE_CAP);
+    out[id] = text.trim().slice(0, DIRECTOR_NOTE_CAP);
   }
   return out;
 }
-function applyResistanceResult(present, notes) {
+function applyDirectorNotes(present, notes) {
   for (const c of present) {
-    c.resistance = notes[c.id]?.trim() || undefined;
+    c.directorNote = notes[c.id]?.trim() || undefined;
   }
+}
+function formatDirectorBlock(present, notes) {
+  const withNotes = present.filter((c) => notes[c.id]?.trim());
+  if (!withNotes.length)
+    return null;
+  return [
+    "[Psyche Director \u2014 how each character is genuinely receiving this moment; a",
+    "boundary and a compass, not a script. Never recite or name this note directly.]",
+    "",
+    ...withNotes.map((c) => `## ${c.name}
+${notes[c.id].trim()}`)
+  ].join(`
+
+`);
 }
 
 // src/agent.ts
@@ -1927,25 +1951,65 @@ ${l.response}`).join(`
   });
   return { events, touched: touched.size, groups: casting.groups.length };
 }
-async function runResistanceStage(run, opts) {
+var DIRECTOR_TOOLS = TOOL_SCHEMAS.filter((t) => t.name === "update_canon" || t.name === "note_knowledge");
+var DIRECTOR_MAX_ROUNDS = 3;
+async function runDirectorStage(run, opts) {
   const present = Object.values(run.characters).filter((c) => c.present);
   if (!present.length)
     return null;
-  const call = await quietJson(resistanceSystemPrompt(opts.directive), resistanceUserContent(present, opts.recentScene, opts.cardContext), {
-    forceNoReasoning: false,
-    signal: opts.signal,
-    userId: opts.userId,
-    connectionId: opts.connectionId
-  });
-  const notes = parseResistance(extractJson(call.content), present.map((c) => c.id));
-  applyResistanceResult(present, notes);
+  const messages = [
+    { role: "system", content: directorSystemPrompt(opts.directive) },
+    { role: "user", content: directorUserContent(present, opts.playerMessage, opts.recentScene, opts.cardContext) }
+  ];
+  const toolCalls = [];
+  let finalContent = "";
+  for (let round = 0;round < DIRECTOR_MAX_ROUNDS; round++) {
+    const res = await spindle.generate.quiet({
+      type: "quiet",
+      messages,
+      tools: DIRECTOR_TOOLS,
+      parameters: { temperature: 0.9 },
+      reasoning: { source: "custom", effort: opts.reasoningEffort },
+      signal: opts.signal,
+      userId: opts.userId,
+      ...opts.connectionId ? { connection_id: opts.connectionId } : {}
+    });
+    const calls = res.tool_calls ?? [];
+    if (calls.length === 0) {
+      finalContent = (res.content ?? "").trim();
+      break;
+    }
+    messages.push({
+      role: "assistant",
+      content: calls.map((c) => ({ type: "tool_use", id: c.call_id, name: c.name, input: c.args }))
+    });
+    const resultParts = [];
+    for (const c of calls) {
+      let result;
+      try {
+        result = await executeTool(run, c.name, c.args);
+      } catch (err) {
+        result = `Error in ${c.name}: ${String(err)}`;
+      }
+      toolCalls.push({ tool: c.name, result });
+      resultParts.push({ type: "tool_result", tool_use_id: c.call_id, content: result });
+    }
+    messages.push({ role: "user", content: resultParts });
+  }
+  const notes = parseDirectorResult(extractJson(finalContent), present.map((c) => c.id));
+  applyDirectorNotes(present, notes);
+  const block = formatDirectorBlock(present, notes);
   opts.onTrace?.({
     at: Date.now(),
-    request: call.log.request,
-    response: call.log.response,
-    meta: `${Object.keys(notes).length}/${present.length} holding a line \xB7 connection: ${opts.connectionId || "prose default"}`
+    request: serializeMessages(messages),
+    response: `notes: ${Object.keys(notes).length}/${present.length}
+
+tool calls (${toolCalls.length}):
+` + toolCalls.map((t, i) => `${i + 1}. ${t.tool} -> ${t.result}`).join(`
+`),
+    meta: `effort: ${opts.reasoningEffort} \xB7 connection: ${opts.connectionId || "prose default"}`
   });
-  return { touched: Object.keys(notes).length };
+  return { block, notes, toolCalls };
 }
 
 // src/backend.ts
@@ -1959,7 +2023,9 @@ var DEFAULT_CONFIG = {
   humanTexture: true,
   offscreenEnabled: true,
   offscreenEventBudget: OFFSCREEN_EVENT_BUDGET,
-  resistanceEnabled: true
+  directorEnabled: false,
+  directorReasoningEffort: "max",
+  directorTimeoutMs: 240000
 };
 var CONFIG_PATH = "config.json";
 var config = { ...DEFAULT_CONFIG };
@@ -2142,26 +2208,6 @@ async function runAgentForChat(chatId, reply, userId) {
         spindle.log.error(`[psyche] offscreen pass failed \u2014 ${m}`);
       }
     }
-    let resistanceNote = "";
-    if (config.resistanceEnabled) {
-      try {
-        const res = await runResistanceStage(run, {
-          recentScene: transcript.slice(-6000),
-          cardContext,
-          directive: config.directive,
-          signal: AbortSignal.timeout(config.agentTimeoutMs),
-          userId,
-          connectionId: agentConn,
-          onTrace: (t) => dbg.stages.resistance = capTrace(t)
-        });
-        resistanceNote = res ? `${res.touched} character(s) holding a line` : "no one present";
-      } catch (err) {
-        const m = err instanceof Error && err.name === "AbortError" ? "timed out" : String(err);
-        resistanceNote = `resistance failed (${m})`;
-        stageErrors.push({ stage: "resistance", error: m });
-        spindle.log.error(`[psyche] resistance pass failed \u2014 ${m}`);
-      }
-    }
     await saveRun(run);
     await refreshInjection(chatId, userId);
     dbg.injection = {
@@ -2186,10 +2232,9 @@ async function runAgentForChat(chatId, reply, userId) {
       edits: result.toolCalls.length,
       note: result.finalNote,
       offscreenNote,
-      resistanceNote,
       stageErrors
     });
-    spindle.log.info(`[psyche] ${char.name}: ${result.toolCalls.length} edits / ${result.rounds} rounds` + (offscreenNote ? ` \xB7 offstage: ${offscreenNote}` : "") + (resistanceNote ? ` \xB7 resistance: ${resistanceNote}` : ""));
+    spindle.log.info(`[psyche] ${char.name}: ${result.toolCalls.length} edits / ${result.rounds} rounds` + (offscreenNote ? ` \xB7 offstage: ${offscreenNote}` : ""));
   } catch (err) {
     const msg = err instanceof Error && err.name === "AbortError" ? "engine timed out" : String(err);
     spindle.log.error(`[psyche] engine failed: ${msg}`);
@@ -2317,6 +2362,104 @@ function registerInjectionInterceptor() {
     spindle.log.warn(`[psyche] interceptor registration failed: ${String(err)}`);
   }
 }
+function textOfMessage(m) {
+  if (typeof m.content === "string")
+    return m.content;
+  if (Array.isArray(m.content)) {
+    return m.content.map((p) => {
+      if (typeof p === "string")
+        return p;
+      const o = p;
+      return typeof o?.text === "string" ? o.text : "";
+    }).filter(Boolean).join(`
+`);
+  }
+  return "";
+}
+function extractPlayerTurn(messages) {
+  let lastUserIndex = -1;
+  for (let i = messages.length - 1;i >= 0; i--) {
+    if (messages[i].role === "user") {
+      lastUserIndex = i;
+      break;
+    }
+  }
+  const playerMessage = lastUserIndex >= 0 ? textOfMessage(messages[lastUserIndex]) : "";
+  const historyEnd = lastUserIndex < 0 ? messages.length : lastUserIndex;
+  const scene = messages.slice(0, historyEnd).filter((m) => m.role === "user" || m.role === "assistant").map((m) => `${m.role === "user" ? "PLAYER" : "CHARACTER"}:
+${textOfMessage(m).trim()}`).filter((l) => l.trim() !== "PLAYER:" && l.trim() !== "CHARACTER:").join(`
+
+`);
+  return { playerMessage, recentScene: scene.slice(-6000) };
+}
+async function directorInterceptor(messages, context) {
+  const first = messages[0];
+  if (first?.role === "system" && typeof first.content === "string" && first.content.includes(AGENT_SENTINEL)) {
+    return messages;
+  }
+  if (!config.enabled || !config.directorEnabled)
+    return messages;
+  const ctx = context ?? {};
+  const chatId = typeof ctx.chatId === "string" ? ctx.chatId : undefined;
+  if (!chatId)
+    return messages;
+  if (ctx.generationType && ctx.generationType !== "normal")
+    return messages;
+  const userId = ctx.userId;
+  try {
+    const run = await loadRun(chatId);
+    if (!Object.values(run.characters).some((c) => c.present))
+      return messages;
+    const char = await characterForChat(chatId, userId);
+    const fullChar = char ? await spindle.characters.get(char.id, userId).catch(() => null) : null;
+    const cardContext = buildCardContext(fullChar);
+    const { playerMessage, recentScene } = extractPlayerTurn(messages);
+    const connectionId = await resolveQuietConnection(config.agentConnectionId, userId);
+    let trace;
+    const result = await runDirectorStage(run, {
+      playerMessage,
+      recentScene,
+      cardContext,
+      reasoningEffort: config.directorReasoningEffort,
+      directive: config.directive,
+      signal: AbortSignal.timeout(config.directorTimeoutMs),
+      userId,
+      connectionId,
+      onTrace: (t) => trace = capTrace(t)
+    });
+    await saveRun(run);
+    if (trace) {
+      try {
+        const prev = await loadDebug(chatId);
+        await spindle.storage.setJson(debugPath(chatId), { ...prev, stages: { ...prev.stages ?? {}, director: trace } });
+      } catch {}
+    }
+    sendState(chatId, userId, "Director ruminated.");
+    if (!result?.block)
+      return messages;
+    const insertAt = (() => {
+      for (let i = messages.length - 1;i >= 0; i--)
+        if (messages[i].role === "user")
+          return i;
+      return messages.length;
+    })();
+    const spliced = messages.slice();
+    spliced.splice(insertAt, 0, { role: "system", content: result.block });
+    return spliced;
+  } catch (err) {
+    const m = err instanceof Error && err.name === "AbortError" ? "timed out" : String(err);
+    spindle.log.error(`[psyche] director interceptor failed \u2014 ${m}`);
+    return messages;
+  }
+}
+function registerDirectorInterceptor() {
+  try {
+    spindle.registerInterceptor(directorInterceptor, 50);
+    spindle.log.info("[psyche] director interceptor registered");
+  } catch (err) {
+    spindle.log.warn(`[psyche] director interceptor registration failed: ${String(err)}`);
+  }
+}
 async function activeChatId(payloadChatId, userId) {
   if (payloadChatId)
     return payloadChatId;
@@ -2337,7 +2480,7 @@ function snapshotRun(run) {
     approvalLabel: describeApproval(c.approval ?? 0).label,
     offscreenSummary: c.offscreenSummary ?? "",
     knowledge: c.knowledge ?? [],
-    resistance: c.resistance ?? "",
+    directorNote: c.directorNote ?? "",
     canon: c.canon ?? "",
     emotions: EMOTIONS.map((def) => {
       const e = c.emotions[def.key] ?? { value: 0, baseline: 0 };
@@ -2389,7 +2532,9 @@ spindle.onFrontendMessage(async (payload, userId) => {
           humanTexture: Boolean(payload.config?.humanTexture ?? config.humanTexture),
           offscreenEnabled: Boolean(payload.config?.offscreenEnabled ?? config.offscreenEnabled),
           offscreenEventBudget: clampInt(payload.config?.offscreenEventBudget ?? config.offscreenEventBudget, 1, 8),
-          resistanceEnabled: Boolean(payload.config?.resistanceEnabled ?? config.resistanceEnabled)
+          directorEnabled: Boolean(payload.config?.directorEnabled ?? config.directorEnabled),
+          directorReasoningEffort: String(payload.config?.directorReasoningEffort ?? config.directorReasoningEffort),
+          directorTimeoutMs: clampInt(payload.config?.directorTimeoutMs ?? config.directorTimeoutMs, 30000, 600000)
         };
         await saveConfig();
         spindle.sendToFrontend({ type: "config", config }, userId);
@@ -2506,6 +2651,7 @@ function clampFloat(v2, min, max) {
   return Math.max(min, Math.min(max, n));
 }
 registerInjectionInterceptor();
+registerDirectorInterceptor();
 (async () => {
   await loadConfig();
   spindle.log.info("[psyche] loaded");

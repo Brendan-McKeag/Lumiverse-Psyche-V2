@@ -63,16 +63,19 @@ top of.
   told. On by default, toggleable and budget-tunable in settings — it favors
   depth (a dedicated call per character/group) over minimizing call count.
 
-- **Not a yes-man.** A fresh, per-turn check on every present character:
-  does the player's current message ask for something that cuts against who
-  this character has shown themselves to be so far? If so, a short
-  "Holding the line" note describes what they're not giving away and why —
-  scaled by approval, so low approval biases toward real friction and high
-  approval biases toward earned compliance. Deliberately **not** a
-  persona/goals field: nothing here is stored past the turn that produced
-  it, and every present character's note is either freshly written or
-  explicitly cleared each turn, so a character can never get stuck
-  defending a stale, re-injected checklist.
+- **The Director (experimental).** Not a yes-man, and not a guess: unlike
+  every other stage, the Director runs from a pre-generation prompt
+  interceptor, *before* the reply is written, so it sees the player's actual
+  incoming message rather than extrapolating from the last exchange. For
+  each present character it reasons — at whatever thinking effort you
+  configure, up to max — about their genuine inclinations, hard lines,
+  where there's real room to negotiate, and whatever about them still isn't
+  established and is fertile ground to invent (it can call `update_canon`/
+  `note_knowledge` mid-thought). Its note is spliced directly into that
+  specific generation's prompt, then discarded — nothing here is a stored
+  goal a character keeps defending turn after turn. Uses a host hook whose
+  timeout behavior is undocumented, so it fails open (falls back to the
+  unmodified prompt on any error or timeout) and defaults **off**.
 
 ## Architecture
 
@@ -80,8 +83,8 @@ A Bun workspace with two parts:
 
 | part | role |
 |------|------|
-| `packages/core` (`@psyche/core`) | pure logic, no host API, no network: the 40-emotion schema + saturation math (`affect.ts`), run-state types (`state.ts`), the approval ledger (`approval.ts`), the per-emotion behavioral rubrics (`rubrics.ts`), the live state→behavior directive renderer (`directive.ts`), the agent tool schemas + executors (`tools.ts`), the mind-update stage prompt (`prompts.ts`), the off-stage simulation stage (`offscreen.ts`), and the ephemeral resistance/conflict-check stage (`resistance.ts`). |
-| `src/` (the plugin) | Lumiverse wiring: generation hooks, storage, the world-info injection interceptor, and the frontend drawer. `runAgentForChat` in `backend.ts` runs two fail-soft stages per turn — mind-update, then off-stage simulation — each with its own debug trace and settings toggle, so future stages (a pacing "director," milestone-triggered character-card evolution) can slot in the same way. |
+| `packages/core` (`@psyche/core`) | pure logic, no host API, no network: the 40-emotion schema + saturation math (`affect.ts`), run-state types (`state.ts`), the approval ledger (`approval.ts`), the per-emotion behavioral rubrics (`rubrics.ts`), the live state→behavior directive renderer (`directive.ts`), the agent tool schemas + executors (`tools.ts`), the mind-update stage prompt (`prompts.ts`), the off-stage simulation stage (`offscreen.ts`), and the Director (`director.ts`). |
+| `src/` (the plugin) | Lumiverse wiring: generation hooks, storage, the world-info injection interceptor, the Director's pre-generation prompt interceptor, and the frontend drawer. `runAgentForChat` in `backend.ts` runs two fail-soft post-hoc stages per turn — mind-update, then off-stage simulation — each with its own debug trace and settings toggle; the Director runs separately, pre-generation, registered via `spindle.registerInterceptor`. |
 
 Plugin state is keyed by `chatId` under the extension's scoped storage
 (`runs/<chatId>.json`).
@@ -100,10 +103,12 @@ rebuild before publishing.
 ## Settings
 
 In the **Psyche** drawer tab: enable/disable, human texture (energy-matched
-replies), off-stage simulation (on/off + event budget), self-interested
-resistance (on/off), engine rounds per turn, decay rate, an optional engine
-directive (tone steering), reset run, per-character presence toggle, and
-direct editing of every emotion value + approval, and a per-character canon
-editor (read/write — the engine grows it, you can seed or correct it too).
-The debug tab shows the raw request/response for each turn's mind update,
-off-stage simulation, resistance check, and injected directive.
+replies), off-stage simulation (on/off + event budget), the Director
+(on/off, reasoning effort, timeout — experimental, off by default), engine
+rounds per turn, decay rate, an optional engine directive (tone steering,
+shared by mind update/off-stage sim/the Director), reset run, per-character
+presence toggle, direct editing of every emotion value + approval, and a
+per-character canon editor (read/write — the engine grows it, you can seed
+or correct it too). The debug tab shows the raw request/response for each
+turn's mind update, off-stage simulation, the Director, and the injected
+directive.

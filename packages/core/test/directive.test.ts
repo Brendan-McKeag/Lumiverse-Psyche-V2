@@ -34,28 +34,6 @@ describe('buildDirective', () => {
     expect(on).toContain('MATCH THEIR ENERGY')
     expect(off).not.toContain('MATCH THEIR ENERGY')
   })
-
-  test('renders a "Holding the line" note when resistance is set', () => {
-    const { run, c } = fixtureRun()
-    c.resistance = "won't hand over the ledger without something in return"
-    const d = buildDirective(run)!
-    expect(d).toContain("Holding the line: won't hand over the ledger without something in return")
-  })
-
-  test('no per-character resistance line when nothing is set (the preamble explains the mechanic either way)', () => {
-    const { run } = fixtureRun()
-    const d = buildDirective(run)!
-    expect(d).not.toMatch(/Holding the line: \S/)
-  })
-
-  test('a strong override suppresses the resistance note', () => {
-    const { run, c } = fixtureRun()
-    c.resistance = 'holding back on principle'
-    c.emotions['fear'].value = 0.95 // overwhelming tier
-    const d = buildDirective(run)!
-    expect(d).toContain('OVERRIDING STATE')
-    expect(d).not.toContain('Holding the line: holding back on principle')
-  })
 })
 
 describe('override tiers', () => {

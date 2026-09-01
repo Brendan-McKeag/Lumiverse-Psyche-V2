@@ -221,11 +221,6 @@ function characterBlock(c: CharacterState, humanTexture = true): string {
   const override = overrideDirective(c)
   if (override) lines.push(override) // highest priority — placed first, before anything moderating
 
-  // A calmer resistance note would fight an overriding emotional state rather
-  // than support it, so it stands down while one is in force.
-  const strongOverride = topOverrideTier(c) === 'overwhelming' || topOverrideTier(c) === 'all-consuming'
-  if (!strongOverride && c.resistance?.trim()) lines.push(`Holding the line: ${c.resistance.trim()}`)
-
   lines.push('')
   lines.push('Underneath (embody — do not narrate or name any of this):')
   lines.push(groundedReadout(c))
