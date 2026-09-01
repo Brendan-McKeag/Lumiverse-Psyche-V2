@@ -380,9 +380,18 @@ function dropObserver(chatId: string) {
 
 const genType = new Map<string, string>()
 
-spindle.on('GENERATION_STARTED', (payload) => {
+/** Best-effort fallback for directorInterceptor if its `context` param turns
+ * out not to carry chatId/userId the way the sibling world-info interceptor's
+ * does — GENERATION_STARTED reliably carries both and fires right around the
+ * same generation, so a very-recent one is a reasonable stand-in. */
+let lastGenerationStart: { chatId: string; userId?: string; at: number } | null = null
+
+spindle.on('GENERATION_STARTED', (payload, userId) => {
   if (!config.enabled || !payload.chatId) return
   genType.set(payload.chatId, payload.generationType ?? 'normal')
+  if ((payload.generationType ?? 'normal') === 'normal') {
+    lastGenerationStart = { chatId: payload.chatId, userId, at: Date.now() }
+  }
   if (payload.generationType === 'quiet' || payload.generationType === 'impersonate') return
   ensureObserver(payload.chatId)
 })
@@ -498,29 +507,65 @@ function extractPlayerTurn(messages: LlmMessage[]): { playerMessage: string; rec
   return { playerMessage, recentScene: scene.slice(-6000) }
 }
 
+function safeStringify(v: unknown, max = 500): string {
+  try {
+    const s = JSON.stringify(v)
+    return s === undefined ? String(v) : s.length > max ? `${s.slice(0, max)}…` : s
+  } catch {
+    return String(v)
+  }
+}
+
 async function directorInterceptor(messages: LlmMessage[], context: unknown): Promise<LlmMessage[]> {
   // Never intercept Psyche's own internal quiet calls (mind-update, off-stage,
   // even the Director's own call) — every prompt Psyche builds itself opens
   // with this sentinel. This guard holds regardless of whether the host
-  // actually routes spindle.generate.quiet() through this hook at all.
+  // actually routes spindle.generate.quiet() through this hook at all. Kept
+  // silent (no log) since it fires on every one of Psyche's own calls.
   const first = messages[0]
   if (first?.role === 'system' && typeof first.content === 'string' && first.content.includes(AGENT_SENTINEL)) {
     return messages
   }
+
+  // Everything past this point is diagnostic-logged on purpose: this hook is
+  // new territory (registerInterceptor, never used by Psyche before), so
+  // every bail-out reason needs to be visible in the extension log rather
+  // than silently doing nothing, or "it's not working" is undebuggable.
+  spindle.log.info(
+    `[psyche] director interceptor fired — ${messages.length} message(s), enabled=${config.enabled}, ` +
+      `directorEnabled=${config.directorEnabled}, context=${safeStringify(context)}`,
+  )
   if (!config.enabled || !config.directorEnabled) return messages
 
   // `context`'s real shape isn't in the type declarations; the sibling
   // world-info interceptor's context carries chatId/characterId/userId, so
   // assume the same shape defensively and no-op if it doesn't hold.
   const ctx = (context ?? {}) as { chatId?: string; characterId?: string; userId?: string; generationType?: string }
-  const chatId = typeof ctx.chatId === 'string' ? ctx.chatId : undefined
-  if (!chatId) return messages
-  if (ctx.generationType && ctx.generationType !== 'normal') return messages
-
-  const userId = ctx.userId
+  let chatId = typeof ctx.chatId === 'string' ? ctx.chatId : undefined
+  let userId = ctx.userId
+  if (!chatId) {
+    // context didn't carry it as expected — fall back to the most recent
+    // GENERATION_STARTED, if it's fresh enough to plausibly be this same call.
+    const fallback = lastGenerationStart && Date.now() - lastGenerationStart.at < 15000 ? lastGenerationStart : null
+    if (fallback) {
+      chatId = fallback.chatId
+      userId = fallback.userId
+      spindle.log.info(`[psyche] director: context had no chatId, used GENERATION_STARTED fallback (chat ${chatId})`)
+    } else {
+      spindle.log.warn(`[psyche] director: no usable chatId in interceptor context and no recent GENERATION_STARTED to fall back on — skipping. context=${safeStringify(context)}`)
+      return messages
+    }
+  }
+  if (ctx.generationType && ctx.generationType !== 'normal') {
+    spindle.log.info(`[psyche] director: skipping non-normal generation (${ctx.generationType})`)
+    return messages
+  }
   try {
     const run = await loadRun(chatId)
-    if (!Object.values(run.characters).some((c) => c.present)) return messages
+    if (!Object.values(run.characters).some((c) => c.present)) {
+      spindle.log.info(`[psyche] director: no present characters for chat ${chatId} — skipping`)
+      return messages
+    }
 
     const char = await characterForChat(chatId, userId)
     const fullChar = char ? await spindle.characters.get(char.id, userId).catch(() => null) : null
@@ -552,13 +597,17 @@ async function directorInterceptor(messages: LlmMessage[], context: unknown): Pr
     }
     void sendState(chatId, userId, 'Director ruminated.') // fire-and-forget; must not delay this generation
 
-    if (!result?.block) return messages
+    if (!result?.block) {
+      spindle.log.info(`[psyche] director: ran but produced no note this turn (chat ${chatId})`)
+      return messages
+    }
     const insertAt = (() => {
       for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === 'user') return i
       return messages.length
     })()
     const spliced = messages.slice()
     spliced.splice(insertAt, 0, { role: 'system', content: result.block })
+    spindle.log.info(`[psyche] director: injected a note for ${Object.keys(result.notes).length} character(s) (chat ${chatId})`)
     return spliced
   } catch (err) {
     const m = err instanceof Error && err.name === 'AbortError' ? 'timed out' : String(err)

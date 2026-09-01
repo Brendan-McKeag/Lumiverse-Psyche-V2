@@ -2295,10 +2295,14 @@ function dropObserver(chatId) {
   }
 }
 var genType = new Map;
-spindle.on("GENERATION_STARTED", (payload) => {
+var lastGenerationStart = null;
+spindle.on("GENERATION_STARTED", (payload, userId) => {
   if (!config.enabled || !payload.chatId)
     return;
   genType.set(payload.chatId, payload.generationType ?? "normal");
+  if ((payload.generationType ?? "normal") === "normal") {
+    lastGenerationStart = { chatId: payload.chatId, userId, at: Date.now() };
+  }
   if (payload.generationType === "quiet" || payload.generationType === "impersonate")
     return;
   ensureObserver(payload.chatId);
@@ -2392,24 +2396,46 @@ ${textOfMessage(m).trim()}`).filter((l) => l.trim() !== "PLAYER:" && l.trim() !=
 `);
   return { playerMessage, recentScene: scene.slice(-6000) };
 }
+function safeStringify(v2, max = 500) {
+  try {
+    const s = JSON.stringify(v2);
+    return s === undefined ? String(v2) : s.length > max ? `${s.slice(0, max)}\u2026` : s;
+  } catch {
+    return String(v2);
+  }
+}
 async function directorInterceptor(messages, context) {
   const first = messages[0];
   if (first?.role === "system" && typeof first.content === "string" && first.content.includes(AGENT_SENTINEL)) {
     return messages;
   }
+  spindle.log.info(`[psyche] director interceptor fired \u2014 ${messages.length} message(s), enabled=${config.enabled}, ` + `directorEnabled=${config.directorEnabled}, context=${safeStringify(context)}`);
   if (!config.enabled || !config.directorEnabled)
     return messages;
   const ctx = context ?? {};
-  const chatId = typeof ctx.chatId === "string" ? ctx.chatId : undefined;
-  if (!chatId)
+  let chatId = typeof ctx.chatId === "string" ? ctx.chatId : undefined;
+  let userId = ctx.userId;
+  if (!chatId) {
+    const fallback = lastGenerationStart && Date.now() - lastGenerationStart.at < 15000 ? lastGenerationStart : null;
+    if (fallback) {
+      chatId = fallback.chatId;
+      userId = fallback.userId;
+      spindle.log.info(`[psyche] director: context had no chatId, used GENERATION_STARTED fallback (chat ${chatId})`);
+    } else {
+      spindle.log.warn(`[psyche] director: no usable chatId in interceptor context and no recent GENERATION_STARTED to fall back on \u2014 skipping. context=${safeStringify(context)}`);
+      return messages;
+    }
+  }
+  if (ctx.generationType && ctx.generationType !== "normal") {
+    spindle.log.info(`[psyche] director: skipping non-normal generation (${ctx.generationType})`);
     return messages;
-  if (ctx.generationType && ctx.generationType !== "normal")
-    return messages;
-  const userId = ctx.userId;
+  }
   try {
     const run = await loadRun(chatId);
-    if (!Object.values(run.characters).some((c) => c.present))
+    if (!Object.values(run.characters).some((c) => c.present)) {
+      spindle.log.info(`[psyche] director: no present characters for chat ${chatId} \u2014 skipping`);
       return messages;
+    }
     const char = await characterForChat(chatId, userId);
     const fullChar = char ? await spindle.characters.get(char.id, userId).catch(() => null) : null;
     const cardContext = buildCardContext(fullChar);
@@ -2435,8 +2461,10 @@ async function directorInterceptor(messages, context) {
       } catch {}
     }
     sendState(chatId, userId, "Director ruminated.");
-    if (!result?.block)
+    if (!result?.block) {
+      spindle.log.info(`[psyche] director: ran but produced no note this turn (chat ${chatId})`);
       return messages;
+    }
     const insertAt = (() => {
       for (let i = messages.length - 1;i >= 0; i--)
         if (messages[i].role === "user")
@@ -2445,6 +2473,7 @@ async function directorInterceptor(messages, context) {
     })();
     const spliced = messages.slice();
     spliced.splice(insertAt, 0, { role: "system", content: result.block });
+    spindle.log.info(`[psyche] director: injected a note for ${Object.keys(result.notes).length} character(s) (chat ${chatId})`);
     return spliced;
   } catch (err) {
     const m = err instanceof Error && err.name === "AbortError" ? "timed out" : String(err);
