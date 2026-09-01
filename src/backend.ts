@@ -562,13 +562,23 @@ async function directorInterceptor(messages: LlmMessage[], context: unknown): Pr
   }
   try {
     const run = await loadRun(chatId)
+    const char = await characterForChat(chatId, userId)
+    if (!char) {
+      spindle.log.info(`[psyche] director: could not resolve a character for chat ${chatId} — skipping`)
+      return messages
+    }
+    // A freshly forked chat (or one just reassigned to this character) has an
+    // empty run — nobody is tracked as present yet, since the only other
+    // place that seeds the primary (the post-hoc pipeline) hasn't had a
+    // reply to react to yet. Seed it here too so turn one gets Director
+    // treatment instead of silently skipping until a warm-up turn completes.
+    ensurePrimary(run, char.id, char.name)
     if (!Object.values(run.characters).some((c) => c.present)) {
       spindle.log.info(`[psyche] director: no present characters for chat ${chatId} — skipping`)
       return messages
     }
 
-    const char = await characterForChat(chatId, userId)
-    const fullChar = char ? await spindle.characters.get(char.id, userId).catch(() => null) : null
+    const fullChar = await spindle.characters.get(char.id, userId).catch(() => null)
     const cardContext = buildCardContext(fullChar)
     const { playerMessage, recentScene } = extractPlayerTurn(messages)
     const connectionId = await resolveQuietConnection(config.agentConnectionId, userId)
