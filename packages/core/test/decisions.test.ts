@@ -159,6 +159,15 @@ describe('apply + render', () => {
     expect(b.lastDecision).toBeUndefined()
   })
 
+  test('stanceLine appends the tactic clause, and applyDecisions stores the tactic', () => {
+    const c = mara()
+    const r = resolveStance(answers(peaked('escalate', 0.9)), c, { temperature: 0 })
+    expect(stanceLine(c, r, 'How: calls it out directly (firmly).')).toContain('How: calls it out directly (firmly).')
+    applyDecisions([c], { mara: r }, 2, { mara: { text: 'calls it out directly', intensity: 2, torn: false } })
+    expect(c.lastDecision?.tactic).toBe('calls it out directly')
+    expect(c.lastDecision?.tacticIntensity).toBe(2)
+  })
+
   test('stanceLine renders the cue, the torn note, the hard line, and leaving', () => {
     const c = mara()
     const r = resolveStance(answers({ ...even(), refuse: 0.3, withdraw: 0.29 }, { hard: 0.9, leaves: 0.8 }), c, { temperature: 0 })
@@ -238,7 +247,7 @@ describe('Jev transport (pure parts)', () => {
   test('provider presets resolve, overrides win, custom needs its own URL', () => {
     expect(resolveDecisionProvider('openrouter')).toEqual({ endpoint: DECISION_PROVIDERS.openrouter.endpoint, model: 'typesafe/jev-latest' })
     expect(resolveDecisionProvider('nanogpt', '', 'typesafe/jev-1.13').model).toBe('typesafe/jev-1.13')
-    expect(resolveDecisionProvider('typesafe').model).toBe('jev-latest')
+    expect(resolveDecisionProvider('typesafe')).toEqual({ endpoint: 'https://api.typesafe.ai/v1/systemone', model: 'jev-latest' })
     expect(resolveDecisionProvider('custom').endpoint).toBe('')
     expect(resolveDecisionProvider('custom', 'https://x/decisions').endpoint).toBe('https://x/decisions')
   })
@@ -246,6 +255,10 @@ describe('Jev transport (pure parts)', () => {
     expect(jevErrorMessage({ error: { message: 'No cookie auth credentials found', code: 401 } })).toBe('No cookie auth credentials found (401)')
     expect(jevErrorMessage({ error: { message: 'Invalid Authentication', type: 'invalid_request_error', code: 'missing_api_key' } })).toContain('missing_api_key')
     expect(jevErrorMessage({ error: 'plain' })).toBe('plain')
+    expect(jevErrorMessage({ detail: { error_type: 'authentication_error', message: 'Must supply an API key!' } })).toBe(
+      'Must supply an API key! (authentication_error)',
+    )
+    expect(jevErrorMessage({ detail: [{ loc: ['body', 'questions'], msg: 'field required' }] })).toBe('body.questions: field required')
     expect(jevErrorMessage({ answers: {} })).toBeNull()
   })
 })

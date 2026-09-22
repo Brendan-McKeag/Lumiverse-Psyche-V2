@@ -33,7 +33,18 @@ import {
   describeResolved,
   type ResolvedDecision,
 } from '@psyche/core/decisions'
-import { makeJudge, type JudgeBackend, type JudgeCallLog } from './judge'
+import { makeJudge, generateTacticOptions, anySignal, type JudgeBackend, type JudgeCallLog } from './judge'
+import {
+  buildTacticMenu,
+  tacticQuestion,
+  resolveTactic,
+  tacticClause,
+  describeTactic,
+  Q_TACTIC,
+  type TacticMenu,
+  type ResolvedTactic,
+} from '@psyche/core/tactics'
+import type { StoredTactic } from '@psyche/core/decisions'
 
 /* ------------------------------------------------------------------ *
  * Psyche (core fork) — the mind engine (plugin transport)
@@ -391,6 +402,7 @@ export async function runDirectorStage(
 export interface DecisionStageResult {
   block: string | null
   resolved: Record<string, ResolvedDecision>
+  tactics: Record<string, ResolvedTactic>
 }
 
 export async function runDecisionStage(
@@ -404,6 +416,10 @@ export async function runDecisionStage(
     jevModel: string
     jevApiKey: string
     temperature: number
+    /** tactic layer: after the stance, the chat model proposes HOW, the judge picks */
+    tacticsEnabled: boolean
+    tacticTimeoutMs: number
+    directive?: string
     signal?: AbortSignal
     userId?: string
     connectionId?: string
@@ -415,6 +431,8 @@ export async function runDecisionStage(
 
   const logs: (JudgeCallLog & { characterId: string })[] = []
   const resolved: Record<string, ResolvedDecision> = {}
+  const tactics: Record<string, ResolvedTactic> = {}
+  const menus: Record<string, TacticMenu> = {}
   await Promise.all(
     present.map(async (c) => {
       const questions = turnQuestions(c)
@@ -432,11 +450,42 @@ export async function runDecisionStage(
       // No stance answer at all means the judge failed or returned garbage —
       // leave this character undecided rather than sampling from uniform.
       if (!answers.stance) return
-      resolved[c.id] = resolveStance(answers, c, { temperature: opts.temperature })
+      const r = resolveStance(answers, c, { temperature: opts.temperature })
+      resolved[c.id] = r
+
+      // ── tactics: HOW they carry the stance out ───────────────────────
+      // Its own timeout layered under the stage's, so a slow generation
+      // costs the tactic, never the stance already decided above.
+      if (!opts.tacticsEnabled) return
+      try {
+        const tacticSignal = anySignal(opts.signal, AbortSignal.timeout(opts.tacticTimeoutMs))
+        const onCall = (l: JudgeCallLog) => logs.push({ ...l, characterId: c.id })
+        const generated = await generateTacticOptions(state, c, r.stance, {
+          directive: opts.directive,
+          userId: opts.userId,
+          connectionId: opts.connectionId,
+          signal: tacticSignal,
+          onCall,
+        })
+        const menu = buildTacticMenu(c, r.stance, generated)
+        menus[c.id] = menu
+        const tacticAnswers = await judge.classify(state, tacticQuestion(c, r.stance, menu), tacticSignal)
+        const t = resolveTactic(tacticAnswers[Q_TACTIC], c, menu, { temperature: opts.temperature })
+        if (t) tactics[c.id] = t
+      } catch (err) {
+        logs.push({ label: 'tactics', request: '(tactic layer)', response: `Error: ${String(err)}`, characterId: c.id })
+      }
     }),
   )
-  applyDecisions(present, resolved, run.turnSeq)
-  const block = formatDecisionBlock(present, resolved)
+
+  const stored: Record<string, StoredTactic> = {}
+  const how: Record<string, string> = {}
+  for (const [id, t] of Object.entries(tactics)) {
+    if (t.option.kind !== 'other') stored[id] = { text: t.option.text, intensity: t.option.intensity, torn: t.torn }
+    how[id] = tacticClause(t)
+  }
+  applyDecisions(present, resolved, run.turnSeq, stored)
+  const block = formatDecisionBlock(present, resolved, how)
 
   opts.onTrace?.({
     at: Date.now(),
@@ -447,15 +496,20 @@ export async function runDecisionStage(
       (Object.keys(resolved).length
         ? present
             .filter((c) => resolved[c.id])
-            .map((c) => `${c.id}: ${describeResolved(resolved[c.id])}`)
+            .map(
+              (c) =>
+                `${c.id}: ${describeResolved(resolved[c.id])}` +
+                (tactics[c.id] && menus[c.id] ? `\n${describeTactic(tactics[c.id], menus[c.id])}` : opts.tacticsEnabled ? '\n  tactic: (none this turn)' : ''),
+            )
             .join('\n')
         : '(no character got a decision this turn)'),
     meta:
       `${Object.keys(resolved).length}/${present.length} decided · backend: ${opts.backend}${opts.backend === 'jev' ? ` (${opts.jevModel} @ ${opts.jevEndpoint || 'no endpoint'})` : ''}` +
-      ` · temperature ${opts.temperature} · connection: ${opts.connectionId || 'prose default'}`,
+      ` · temperature ${opts.temperature} · tactics ${opts.tacticsEnabled ? `on (${Object.keys(tactics).length} chosen)` : 'off'}` +
+      ` · connection: ${opts.connectionId || 'prose default'}`,
   })
 
-  return { block, resolved }
+  return { block, resolved, tactics }
 }
 
 export { AGENT_SENTINEL }

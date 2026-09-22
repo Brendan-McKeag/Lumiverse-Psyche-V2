@@ -27,7 +27,16 @@ interface Character {
   offscreenSummary: string
   knowledge: string[]
   directorNote: string
-  lastDecision: { stance: string; margin: number; torn: boolean; hardLine: number; leaves: number } | null
+  lastDecision: {
+    stance: string
+    margin: number
+    torn: boolean
+    hardLine: number
+    leaves: number
+    tactic?: string
+    tacticIntensity?: number
+    tacticTorn?: boolean
+  } | null
   canon: string
   emotions: Emotion[]
 }
@@ -165,7 +174,7 @@ export function setup(ctx: SpindleFrontendContext) {
             <select class="ps-input ps-jev-provider">
               <option value="openrouter">OpenRouter — typesafe/jev-latest (beta decisions endpoint)</option>
               <option value="nanogpt">NanoGPT — typesafe/jev-latest</option>
-              <option value="typesafe">TypeSafe directly — thejevai.com</option>
+              <option value="typesafe">TypeSafe directly — api.typesafe.ai</option>
               <option value="custom">Custom URL</option>
             </select>
           </div>
@@ -175,6 +184,8 @@ export function setup(ctx: SpindleFrontendContext) {
         </div>
         <div><span class="ps-muted">Stance temperature (0 = always the likeliest stance; 0.7 = human; 1 = straight from the distribution)</span><input type="number" class="ps-input ps-dec-temp" min="0" max="1.5" step="0.05" /></div>
         <div><span class="ps-muted">Timeout (ms) — the reply goes out without a stance if exceeded</span><input type="number" class="ps-input ps-dec-timeout" min="3000" max="120000" step="1000" /></div>
+        <label class="ps-row"><input type="checkbox" class="ps-tac-en" /> Tactics — after the stance, the engine model proposes specific ways this character might carry it out and the judge picks one (adds a few seconds before each reply)</label>
+        <div><span class="ps-muted">Tactic timeout (ms) — past this the stance goes out without a "how"</span><input type="number" class="ps-input ps-tac-timeout" min="3000" max="120000" step="1000" /></div>
         <div class="ps-row"><button class="ps-btn ps-dec-save">Save settings</button></div>
       </div>
 
@@ -240,7 +251,7 @@ export function setup(ctx: SpindleFrontendContext) {
   const JEV_PRESETS: Record<string, { endpoint: string; model: string }> = {
     openrouter: { endpoint: 'https://openrouter.ai/api/alpha/decisions', model: 'typesafe/jev-latest' },
     nanogpt: { endpoint: 'https://nano-gpt.com/api/v1/decisions', model: 'typesafe/jev-latest' },
-    typesafe: { endpoint: 'https://thejevai.com/v1/systemone', model: 'jev-latest' },
+    typesafe: { endpoint: 'https://api.typesafe.ai/v1/systemone', model: 'jev-latest' },
     custom: { endpoint: '', model: 'typesafe/jev-latest' },
   }
   function renderJevOpts() {
@@ -255,6 +266,8 @@ export function setup(ctx: SpindleFrontendContext) {
   jevProviderEl.addEventListener('change', renderJevOpts)
   const decTempEl = q<HTMLInputElement>('.ps-dec-temp')
   const decTimeoutEl = q<HTMLInputElement>('.ps-dec-timeout')
+  const tacEnEl = q<HTMLInputElement>('.ps-tac-en')
+  const tacTimeoutEl = q<HTMLInputElement>('.ps-tac-timeout')
   const canonEl = q<HTMLTextAreaElement>('.ps-canon')
   const offSummaryEl = q<HTMLElement>('.ps-off-summary')
   const offHEl = q<HTMLElement>('.ps-off-h')
@@ -346,8 +359,12 @@ export function setup(ctx: SpindleFrontendContext) {
     const d = c.lastDecision
     if (d?.stance) {
       const pct = (x: number) => `${Math.round(x * 100)}%`
+      const intensityWord: Record<number, string> = { 1: 'lightly', 2: 'firmly', 3: 'all in' }
+      const how = d.tactic
+        ? ` — ${d.tactic} (${intensityWord[d.tacticIntensity ?? 2] ?? 'firmly'}${d.tacticTorn ? ', wavering' : ''})`
+        : ''
       decisionNoteEl.textContent =
-        `Last stance: ${d.stance.replace('_', ' ')}${d.torn ? ' (torn)' : ''} · margin ${d.margin.toFixed(2)}` +
+        `Last stance: ${d.stance.replace('_', ' ')}${d.torn ? ' (torn)' : ''}${how} · margin ${d.margin.toFixed(2)}` +
         ` · hard line ${pct(d.hardLine)} · leaves ${pct(d.leaves)}`
       decisionNoteEl.style.display = 'block'
     } else {
@@ -545,6 +562,8 @@ export function setup(ctx: SpindleFrontendContext) {
         jevApiKey: jevKeyEl.value,
         decisionTemperature: Number(decTempEl.value),
         decisionTimeoutMs: Number(decTimeoutEl.value),
+        tacticsEnabled: tacEnEl.checked,
+        tacticTimeoutMs: Number(tacTimeoutEl.value),
       },
     })
   }
@@ -600,7 +619,9 @@ export function setup(ctx: SpindleFrontendContext) {
         jevKeyEl.value = c.jevApiKey ?? ''
         renderJevOpts()
         decTempEl.value = String(c.decisionTemperature ?? 0.7)
-        decTimeoutEl.value = String(c.decisionTimeoutMs ?? 20000)
+        decTimeoutEl.value = String(c.decisionTimeoutMs ?? 30000)
+        tacEnEl.checked = c.tacticsEnabled !== false
+        tacTimeoutEl.value = String(c.tacticTimeoutMs ?? 20000)
         roundsEl.value = String(c.maxRounds ?? 8)
         decayEl.value = String(c.decayRate ?? 0.12)
         dirEl.value = c.directive ?? ''

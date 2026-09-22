@@ -79,6 +79,15 @@ interface Config {
   /** stance sampling temperature: 0 = always the most likely stance, 1 = draw straight from the distribution */
   decisionTemperature: number
   decisionTimeoutMs: number
+  /**
+   * Tactic layer (needs the decision layer): once the stance is chosen, the
+   * engine model proposes specific ways THIS character might carry it out,
+   * code filters them for plausibility, and the judge picks one. Adds one
+   * chat-model call plus one judge call per present character, before the
+   * reply. Off = stance only, exactly as before.
+   */
+  tacticsEnabled: boolean
+  tacticTimeoutMs: number
 }
 
 const DEFAULT_CONFIG: Config = {
@@ -101,7 +110,9 @@ const DEFAULT_CONFIG: Config = {
   jevModel: '',
   jevApiKey: '',
   decisionTemperature: 0.7,
-  decisionTimeoutMs: 20000,
+  decisionTimeoutMs: 30000,
+  tacticsEnabled: true,
+  tacticTimeoutMs: 20000,
 }
 const CONFIG_PATH = 'config.json'
 
@@ -661,6 +672,9 @@ async function directorInterceptor(messages: LlmMessage[], context: unknown): Pr
           jevModel: jev.model,
           jevApiKey: config.jevApiKey,
           temperature: config.decisionTemperature,
+          tacticsEnabled: config.tacticsEnabled,
+          tacticTimeoutMs: config.tacticTimeoutMs,
+          directive: config.directive,
           signal: AbortSignal.timeout(config.decisionTimeoutMs),
           userId,
           connectionId,
@@ -668,7 +682,11 @@ async function directorInterceptor(messages: LlmMessage[], context: unknown): Pr
         })
         if (result?.block) {
           blocks.push(result.block)
-          notes.push(`stances: ${Object.entries(result.resolved).map(([id, r]) => `${id} ${r.stance}${r.torn ? '?' : ''}`).join(', ')}`)
+          notes.push(
+            `stances: ${Object.entries(result.resolved)
+              .map(([id, r]) => `${id} ${r.stance}${r.torn ? '?' : ''}${result.tactics[id] && result.tactics[id].option.kind !== 'other' ? ` (${result.tactics[id].option.text})` : ''}`)
+              .join(', ')}`,
+          )
         } else {
           spindle.log.info(`[psyche] decisions: ran but no character got a stance this turn (chat ${chatId})`)
         }
@@ -807,6 +825,8 @@ spindle.onFrontendMessage(async (payload: any, userId) => {
         jevApiKey: payload.config?.jevApiKey === undefined ? config.jevApiKey : String(payload.config.jevApiKey ?? ''),
         decisionTemperature: clampFloat(payload.config?.decisionTemperature ?? config.decisionTemperature, 0, 1.5),
         decisionTimeoutMs: clampInt(payload.config?.decisionTimeoutMs ?? config.decisionTimeoutMs, 3000, 120000),
+        tacticsEnabled: Boolean(payload.config?.tacticsEnabled ?? config.tacticsEnabled),
+        tacticTimeoutMs: clampInt(payload.config?.tacticTimeoutMs ?? config.tacticTimeoutMs, 3000, 120000),
       }
       await saveConfig()
       spindle.sendToFrontend({ type: 'config', config }, userId)

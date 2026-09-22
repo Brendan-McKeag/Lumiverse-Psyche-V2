@@ -13,6 +13,15 @@ import {
   jevErrorMessage,
 } from '@psyche/core/decisions'
 import { extractJson } from '@psyche/core/prompts'
+import {
+  tacticGenSystemPrompt,
+  tacticGenUserContent,
+  parseGeneratedTactics,
+  type TacticKind,
+  type Intensity,
+} from '@psyche/core/tactics'
+import type { Stance } from '@psyche/core/decisions'
+import type { CharacterState } from '@psyche/core/state'
 
 /* ------------------------------------------------------------------ *
  * Psyche (core fork) — judge transports
@@ -120,6 +129,57 @@ export function jevJudge(opts: JudgeOpts): Judge {
       }
     },
   }
+}
+
+/* ------------------------- tactic generation ------------------------- */
+/* Always the chat model, whichever judge is selected: this is the open-ended
+ * half of the split (propose specific options), and Jev can't write text. */
+
+export async function generateTacticOptions(
+  state: string,
+  c: CharacterState,
+  stance: Stance,
+  opts: { directive?: string; userId?: string; connectionId?: string; signal?: AbortSignal; onCall?: (log: JudgeCallLog) => void },
+): Promise<{ text: string; kind: TacticKind; intensity: Intensity }[]> {
+  const messages: LlmMessage[] = [
+    { role: 'system', content: tacticGenSystemPrompt(opts.directive) },
+    { role: 'user', content: tacticGenUserContent(state, c, stance) },
+  ]
+  const req = messages.map((m) => `[${m.role}]\n${m.content as string}`).join('\n\n')
+  try {
+    const res = (await spindle.generate.quiet({
+      type: 'quiet',
+      messages,
+      parameters: { temperature: 0.9 },
+      reasoning: { source: 'off' },
+      signal: opts.signal,
+      userId: opts.userId,
+      ...(opts.connectionId ? { connection_id: opts.connectionId } : {}),
+    })) as { content?: string }
+    const content = res.content ?? ''
+    opts.onCall?.({ label: 'generate options', request: req, response: content })
+    return parseGeneratedTactics(extractJson(content))
+  } catch (err) {
+    opts.onCall?.({ label: 'generate options', request: req, response: `Error: ${String(err)}` })
+    return []
+  }
+}
+
+/** Abort when ANY of the signals fires (AbortSignal.any where available). */
+export function anySignal(...signals: (AbortSignal | undefined)[]): AbortSignal | undefined {
+  const list = signals.filter((s): s is AbortSignal => !!s)
+  if (list.length <= 1) return list[0]
+  const any = (AbortSignal as unknown as { any?: (s: AbortSignal[]) => AbortSignal }).any
+  if (typeof any === 'function') return any(list)
+  const ctl = new AbortController()
+  for (const s of list) {
+    if (s.aborted) {
+      ctl.abort(s.reason)
+      break
+    }
+    s.addEventListener('abort', () => ctl.abort(s.reason), { once: true })
+  }
+  return ctl.signal
 }
 
 export type { Decision }

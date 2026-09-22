@@ -14,6 +14,7 @@
     "./rubrics": "./src/rubrics.ts",
     "./offscreen": "./src/offscreen.ts",
     "./director": "./src/director.ts",
-    "./decisions": "./src/decisions.ts"
+    "./decisions": "./src/decisions.ts",
+    "./tactics": "./src/tactics.ts"
   }
 }

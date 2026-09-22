@@ -691,6 +691,16 @@ function overrideTier(value, kind) {
     return "intense";
   return null;
 }
+function topOverrideTier(c) {
+  let best = null;
+  const rank = { intense: 1, overwhelming: 2, "all-consuming": 3 };
+  for (const def of EMOTIONS) {
+    const t = overrideTier(v(c, def.key), def.kind);
+    if (t && (!best || rank[t] > rank[best]))
+      best = t;
+  }
+  return best;
+}
 function overrideDirective(c) {
   const rows = EMOTIONS.map((def) => ({ def, val: v(c, def.key), tier: overrideTier(v(c, def.key), def.kind) })).filter((r) => r.tier).sort((a, b) => Math.abs(b.val) - Math.abs(a.val));
   if (!rows.length)
@@ -1990,15 +2000,27 @@ function sample(dist, temperature, rng) {
   return STANCES[STANCES.length - 1];
 }
 var clamp01 = (v) => Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0;
-function applyDecisions(present, resolved, turnSeq) {
+function applyDecisions(present, resolved, turnSeq, tactics = {}) {
   const now = Date.now();
   for (const c of present) {
     const r = resolved[c.id];
-    c.lastDecision = r ? { stance: r.stance, margin: r.margin, torn: r.torn, hardLine: r.hardLine, leaves: r.leaves, turnSeq, at: now } : undefined;
+    const t = tactics[c.id];
+    c.lastDecision = r ? {
+      stance: r.stance,
+      margin: r.margin,
+      torn: r.torn,
+      hardLine: r.hardLine,
+      leaves: r.leaves,
+      ...t ? { tactic: t.text, tacticIntensity: t.intensity, tacticTorn: t.torn } : {},
+      turnSeq,
+      at: now
+    } : undefined;
   }
 }
-function stanceLine(c, r) {
+function stanceLine(c, r, how = "") {
   const parts = [`This turn, ${c.name} ${STANCE_CUE[r.stance]}`];
+  if (how.trim())
+    parts.push(how.trim());
   if (r.torn)
     parts.push(`They are visibly torn between that and the pull to ${STANCE_MEANING[r.runnerUp]} \u2014 it can waver mid-reply.`);
   if (r.hardLine >= HARD_LINE_THRESHOLD)
@@ -2009,7 +2031,7 @@ function stanceLine(c, r) {
     parts.push("They are ready to end this or leave; let them, if the reply carries them there.");
   return parts.join(" ");
 }
-function formatDecisionBlock(present, resolved) {
+function formatDecisionBlock(present, resolved, how = {}) {
   const rows = present.filter((c) => resolved[c.id]);
   if (!rows.length)
     return null;
@@ -2018,7 +2040,7 @@ function formatDecisionBlock(present, resolved) {
     "with it, decided already; how it plays out on the page is yours. Never name or recite this.]",
     "",
     ...rows.map((c) => `## ${c.name}
-${stanceLine(c, resolved[c.id])}`)
+${stanceLine(c, resolved[c.id], how[c.id] ?? "")}`)
   ].join(`
 
 `);
@@ -2157,7 +2179,7 @@ function distributionFrom(v, keys) {
 var DECISION_PROVIDERS = {
   openrouter: { label: "OpenRouter", endpoint: "https://openrouter.ai/api/alpha/decisions", model: "typesafe/jev-latest" },
   nanogpt: { label: "NanoGPT", endpoint: "https://nano-gpt.com/api/v1/decisions", model: "typesafe/jev-latest" },
-  typesafe: { label: "TypeSafe (direct)", endpoint: "https://thejevai.com/v1/systemone", model: "jev-latest" },
+  typesafe: { label: "TypeSafe (direct)", endpoint: "https://api.typesafe.ai/v1/systemone", model: "jev-latest" },
   custom: { label: "Custom URL", endpoint: "", model: "typesafe/jev-latest" }
 };
 var isDecisionProvider = (s) => typeof s === "string" && Object.prototype.hasOwnProperty.call(DECISION_PROVIDERS, s);
@@ -2183,6 +2205,22 @@ function jevErrorMessage(raw) {
   const o = raw;
   if (!o || typeof o !== "object")
     return null;
+  const d = o.detail;
+  if (typeof d === "string")
+    return d;
+  if (Array.isArray(d)) {
+    const parts = d.map((x) => {
+      const xo = x;
+      const loc = Array.isArray(xo?.loc) ? xo.loc.join(".") : "";
+      return typeof xo?.msg === "string" ? loc ? `${loc}: ${xo.msg}` : xo.msg : "";
+    }).filter(Boolean);
+    if (parts.length)
+      return parts.join("; ");
+  } else if (d && typeof d === "object") {
+    const dd = d;
+    if (typeof dd.message === "string")
+      return `${dd.message}${typeof dd.error_type === "string" ? ` (${dd.error_type})` : ""}`;
+  }
   const e = o.error;
   if (typeof e === "string")
     return e;
@@ -2224,6 +2262,269 @@ function describeResolved(r) {
   const dist = STANCES.map((s) => `${s} ${(r.dist[s] * 100).toFixed(0)}%`).join(", ");
   return `${r.stance}${r.torn ? " (torn vs " + r.runnerUp + ")" : ""} \xB7 margin ${r.margin.toFixed(2)}` + ` \xB7 hard line ${(r.hardLine * 100).toFixed(0)}% \xB7 leaves ${(r.leaves * 100).toFixed(0)}%
     dist: ${dist}`;
+}
+
+// packages/core/src/tactics.ts
+var TACTIC_KINDS = ["verbal", "action", "physical", "leverage", "social", "withdrawal", "other"];
+var isKind = (s) => typeof s === "string" && TACTIC_KINDS.includes(s);
+var INTENSITY_WORD = { 1: "lightly", 2: "firmly", 3: "all in" };
+var MAX_GENERATED = 5;
+var TEXT_CAP = 140;
+var A = (text, kind, intensity) => ({ text, kind, intensity });
+var TACTIC_ANCHORS = {
+  comply: [A("goes along with it simply, no fuss", "verbal", 1), A("goes along and adds something of their own", "action", 2)],
+  comply_reluctantly: [
+    A("sets a condition before agreeing", "verbal", 1),
+    A("does it, but only the bare minimum", "action", 1),
+    A("does it while making the cost plain", "verbal", 2)
+  ],
+  negotiate: [
+    A("asks for something in return", "verbal", 1),
+    A("counters with a smaller version of the ask", "verbal", 1),
+    A("names their terms and holds them", "verbal", 2)
+  ],
+  stall: [A("deflects with humor", "verbal", 1), A("changes the subject", "verbal", 1), A("answers with a question of their own", "verbal", 1)],
+  refuse: [A("a plain no, no explanation", "verbal", 1), A("no, with their reason", "verbal", 1), A("no, and a warning not to ask again", "verbal", 2)],
+  withdraw: [A("goes quiet and gives little", "withdrawal", 1), A("cuts the conversation short", "withdrawal", 2), A("gets up and leaves", "withdrawal", 3)],
+  escalate: [A("sharpens their words", "verbal", 1), A("calls it out directly", "verbal", 2), A("issues an ultimatum", "leverage", 3)]
+};
+var OTHER_OPTION = {
+  id: "other",
+  text: "something else entirely, true to who they are",
+  kind: "other",
+  intensity: 1,
+  source: "other"
+};
+function tacticGenSystemPrompt(directive = "") {
+  return [
+    AGENT_SENTINEL,
+    "You propose options. You do not write the scene, and you do not decide.",
+    "",
+    "A character has already decided WHAT to do with the player's latest move (their",
+    "stance is given below). List distinct ways THIS specific character might carry it",
+    "out right now \u2014 drawn from who they are, their canon, how they feel, their history",
+    "with the player, and what the player just said. Another model will pick one.",
+    "",
+    "RULES:",
+    `  \u2022 3 to ${MAX_GENERATED} options, each a genuinely different move \u2014 not rewordings of one idea.`,
+    "  \u2022 SPREAD: at least one light option (intensity 1) and at least one stronger one",
+    "    (2 or 3); and not all the same kind.",
+    '  \u2022 Each option is ONE short phrase naming a kind of move (e.g. "brings up the debt',
+    '    the player still owes her"). Never dialogue, never a script, never an outcome.',
+    "  \u2022 Be specific to this character and this moment where you can \u2014 that is the whole",
+    "    point of asking you instead of using a generic list.",
+    "  \u2022 Never decide what the player does, and never resolve the plot.",
+    "",
+    "Tag each option:",
+    "  kind: verbal | action | physical | leverage | social | withdrawal",
+    "    (physical = bodily contact or intimidation; leverage = threats, secrets, debts,",
+    "    ultimatums; social = involving other people or reputation)",
+    "  intensity: 1 light \xB7 2 firm \xB7 3 all in",
+    "",
+    'Return ONLY JSON: { "options": [ { "text": "...", "kind": "...", "intensity": 1 } ] }',
+    directive.trim() ? `
+OPERATOR DIRECTIVE:
+${directive.trim()}` : ""
+  ].join(`
+`);
+}
+function tacticGenUserContent(state, c, stance) {
+  return [
+    "STATE:",
+    '"""',
+    state,
+    '"""',
+    "",
+    `${c.name.toUpperCase()}'S STANCE THIS TURN: ${stance} \u2014 ${STANCE_MEANING[stance]}`,
+    "",
+    `How might ${c.name} carry that out? Return only the JSON.`
+  ].join(`
+`);
+}
+function parseGeneratedTactics(raw) {
+  const o = raw;
+  const list = Array.isArray(o?.options) ? o.options : Array.isArray(raw) ? raw : [];
+  const out = [];
+  for (const item of list) {
+    const it = typeof item === "string" ? { text: item } : item;
+    const text = typeof it?.text === "string" ? it.text.trim().replace(/\s+/g, " ").slice(0, TEXT_CAP) : "";
+    if (!text)
+      continue;
+    const kind = isKind(it.kind) && it.kind !== "other" ? it.kind : "verbal";
+    const n = typeof it.intensity === "number" ? Math.round(it.intensity) : Number(it.intensity);
+    const intensity = Number.isFinite(n) ? Math.max(1, Math.min(3, n)) : 2;
+    if (out.some((x) => similar(x.text, text)))
+      continue;
+    out.push({ text, kind, intensity });
+    if (out.length >= MAX_GENERATED)
+      break;
+  }
+  return out;
+}
+var words = (s) => new Set(s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((w) => w.length > 2));
+function similar(a, b) {
+  const A = words(a);
+  const B = words(b);
+  if (!A.size || !B.size)
+    return a.trim().toLowerCase() === b.trim().toLowerCase();
+  let inter = 0;
+  for (const w of A)
+    if (B.has(w))
+      inter++;
+  return inter / (A.size + B.size - inter) >= 0.7;
+}
+var val = (c, k) => c.emotions[k]?.value ?? 0;
+var HEAT_KEYS = [
+  "anger",
+  "irritation",
+  "frustration",
+  "contempt",
+  "disgust",
+  "jealousy",
+  "defiance",
+  "fear",
+  "anxiety",
+  "shame",
+  "embarrassment",
+  "desire",
+  "sexual_arousal",
+  "possessiveness",
+  "excitement",
+  "dominance",
+  "sadness",
+  "grief",
+  "fatigue",
+  "boredom"
+];
+var PHYSICAL_KEYS = ["anger", "fear", "dominance", "desire", "sexual_arousal", "attraction", "affection", "tenderness", "possessiveness", "disgust"];
+function emotionalHeat(c) {
+  return Math.max(0, ...HEAT_KEYS.map((k) => val(c, k)));
+}
+function intensityCap(c) {
+  if (topOverrideTier(c))
+    return 3;
+  const heat = emotionalHeat(c);
+  if (heat >= 0.7)
+    return 3;
+  if (heat >= 0.4)
+    return 2;
+  return 1;
+}
+function physicalAllowed(c) {
+  return !!topOverrideTier(c) || PHYSICAL_KEYS.some((k) => val(c, k) >= 0.5);
+}
+function buildTacticMenu(c, stance, generated) {
+  const cap = intensityCap(c);
+  const physical = physicalAllowed(c);
+  const dropped = [];
+  const options = [];
+  const admit = (o, id, source) => {
+    if (o.intensity > cap)
+      return dropped.push({ text: o.text, why: `intensity ${o.intensity} > cap ${cap}` });
+    if (o.kind === "physical" && !physical)
+      return dropped.push({ text: o.text, why: "physical, but nothing physical is in play" });
+    if (options.some((x) => similar(x.text, o.text)))
+      return dropped.push({ text: o.text, why: "duplicate" });
+    options.push({ ...o, id, source });
+  };
+  generated.forEach((o, i) => admit(o, `g${i + 1}`, "generated"));
+  TACTIC_ANCHORS[stance].forEach((o, i) => admit(o, `a${i + 1}`, "anchor"));
+  options.push(OTHER_OPTION);
+  return { options, dropped, cap };
+}
+var Q_TACTIC = "tactic";
+function tacticQuestion(c, stance, menu) {
+  return {
+    [Q_TACTIC]: {
+      kind: "choice",
+      instructions: `${c.name} has decided to respond this way: ${STANCE_MEANING[stance]}. Given who they are, how they feel, ` + `and exactly what the player just did, which of these is how they would actually do it?`,
+      options: Object.fromEntries(menu.options.map((o) => [o.id, o.text]))
+    }
+  };
+}
+function tacticWeights(approval, kind) {
+  if (kind === "leverage") {
+    if (approval >= 4000)
+      return 0.25;
+    if (approval >= 2000)
+      return 0.5;
+    if (approval <= -2000)
+      return 1.3;
+  }
+  if (kind === "physical" && approval >= 4000)
+    return 0.6;
+  return 1;
+}
+function resolveTactic(answer, c, menu, opts = {}) {
+  if (!answer)
+    return null;
+  const temperature = opts.temperature ?? 0.7;
+  const rng = opts.rng ?? Math.random;
+  const ids = menu.options.map((o) => o.id);
+  const raw = {};
+  for (const id of ids)
+    raw[id] = 0;
+  if (answer.dist) {
+    for (const [k, v] of Object.entries(answer.dist))
+      if (k in raw && Number.isFinite(v))
+        raw[k] = Math.max(0, v);
+  }
+  if (ids.every((id) => raw[id] === 0)) {
+    if (!(answer.value in raw))
+      return null;
+    raw[answer.value] = 1;
+  }
+  const byId = Object.fromEntries(menu.options.map((o) => [o.id, o]));
+  const adjusted = {};
+  for (const id of ids)
+    adjusted[id] = raw[id] * tacticWeights(c.approval ?? 0, byId[id].kind);
+  const sum = ids.reduce((a, id) => a + adjusted[id], 0);
+  if (!(sum > 0))
+    return null;
+  const dist = {};
+  for (const id of ids)
+    dist[id] = adjusted[id] / sum;
+  const ranked = [...ids].sort((a, b) => dist[b] - dist[a]);
+  const margin = dist[ranked[0]] - (dist[ranked[1]] ?? 0);
+  let chosen = ranked[0];
+  if (temperature > 0) {
+    const w = ids.map((id) => Math.pow(dist[id], 1 / temperature));
+    const total = w.reduce((a, b) => a + b, 0);
+    let r = rng() * total;
+    for (let i = 0;i < ids.length; i++) {
+      r -= w[i];
+      if (r <= 0) {
+        chosen = ids[i];
+        break;
+      }
+    }
+  }
+  const runnerUpId = ranked[0] === chosen ? ranked[1] : ranked[0];
+  return {
+    option: byId[chosen],
+    runnerUp: runnerUpId ? byId[runnerUpId] : null,
+    margin,
+    torn: margin < TORN_MARGIN,
+    dist
+  };
+}
+function tacticClause(t) {
+  if (!t || t.option.kind === "other")
+    return "";
+  let s = `How: ${t.option.text} (${INTENSITY_WORD[t.option.intensity]}).`;
+  if (t.torn && t.runnerUp && t.runnerUp.kind !== "other")
+    s += ` Half-tempted instead to ${t.runnerUp.text}.`;
+  return s;
+}
+function describeTactic(t, menu) {
+  const rows = menu.options.map((o) => `      ${o.id} [${o.source}, ${o.kind}, ${o.intensity}] ${(t.dist[o.id] * 100).toFixed(0)}% \u2014 ${o.text}`).join(`
+`);
+  const dropped = menu.dropped.length ? `
+    dropped by policy:
+${menu.dropped.map((d) => `      \xD7 ${d.text} (${d.why})`).join(`
+`)}` : "";
+  return `  tactic: ${t.option.id} "${t.option.text}"${t.torn ? " (torn)" : ""} \xB7 margin ${t.margin.toFixed(2)} \xB7 intensity cap ${menu.cap}
+${rows}${dropped}`;
 }
 
 // src/judge.ts
@@ -2294,6 +2595,50 @@ ${text}` : text });
       }
     }
   };
+}
+async function generateTacticOptions(state, c, stance, opts) {
+  const messages = [
+    { role: "system", content: tacticGenSystemPrompt(opts.directive) },
+    { role: "user", content: tacticGenUserContent(state, c, stance) }
+  ];
+  const req = messages.map((m) => `[${m.role}]
+${m.content}`).join(`
+
+`);
+  try {
+    const res = await spindle.generate.quiet({
+      type: "quiet",
+      messages,
+      parameters: { temperature: 0.9 },
+      reasoning: { source: "off" },
+      signal: opts.signal,
+      userId: opts.userId,
+      ...opts.connectionId ? { connection_id: opts.connectionId } : {}
+    });
+    const content = res.content ?? "";
+    opts.onCall?.({ label: "generate options", request: req, response: content });
+    return parseGeneratedTactics(extractJson(content));
+  } catch (err) {
+    opts.onCall?.({ label: "generate options", request: req, response: `Error: ${String(err)}` });
+    return [];
+  }
+}
+function anySignal(...signals) {
+  const list = signals.filter((s) => !!s);
+  if (list.length <= 1)
+    return list[0];
+  const any = AbortSignal.any;
+  if (typeof any === "function")
+    return any(list);
+  const ctl = new AbortController;
+  for (const s of list) {
+    if (s.aborted) {
+      ctl.abort(s.reason);
+      break;
+    }
+    s.addEventListener("abort", () => ctl.abort(s.reason), { once: true });
+  }
+  return ctl.signal;
 }
 
 // src/agent.ts
@@ -2517,6 +2862,8 @@ async function runDecisionStage(run, opts) {
     return null;
   const logs = [];
   const resolved = {};
+  const tactics = {};
+  const menus = {};
   await Promise.all(present.map(async (c) => {
     const questions = turnQuestions(c);
     const state = decisionState(c, opts.playerMessage, opts.recentScene, opts.cardContext);
@@ -2532,10 +2879,39 @@ async function runDecisionStage(run, opts) {
     const answers = await judge.classify(state, questions, opts.signal);
     if (!answers.stance)
       return;
-    resolved[c.id] = resolveStance(answers, c, { temperature: opts.temperature });
+    const r = resolveStance(answers, c, { temperature: opts.temperature });
+    resolved[c.id] = r;
+    if (!opts.tacticsEnabled)
+      return;
+    try {
+      const tacticSignal = anySignal(opts.signal, AbortSignal.timeout(opts.tacticTimeoutMs));
+      const onCall = (l) => logs.push({ ...l, characterId: c.id });
+      const generated = await generateTacticOptions(state, c, r.stance, {
+        directive: opts.directive,
+        userId: opts.userId,
+        connectionId: opts.connectionId,
+        signal: tacticSignal,
+        onCall
+      });
+      const menu = buildTacticMenu(c, r.stance, generated);
+      menus[c.id] = menu;
+      const tacticAnswers = await judge.classify(state, tacticQuestion(c, r.stance, menu), tacticSignal);
+      const t = resolveTactic(tacticAnswers[Q_TACTIC], c, menu, { temperature: opts.temperature });
+      if (t)
+        tactics[c.id] = t;
+    } catch (err) {
+      logs.push({ label: "tactics", request: "(tactic layer)", response: `Error: ${String(err)}`, characterId: c.id });
+    }
   }));
-  applyDecisions(present, resolved, run.turnSeq);
-  const block = formatDecisionBlock(present, resolved);
+  const stored = {};
+  const how = {};
+  for (const [id, t] of Object.entries(tactics)) {
+    if (t.option.kind !== "other")
+      stored[id] = { text: t.option.text, intensity: t.option.intensity, torn: t.torn };
+    how[id] = tacticClause(t);
+  }
+  applyDecisions(present, resolved, run.turnSeq, stored);
+  const block = formatDecisionBlock(present, resolved, how);
   opts.onTrace?.({
     at: Date.now(),
     request: logs.map((l) => `########## ${l.characterId} (${l.label}) \u2014 REQUEST ##########
@@ -2548,11 +2924,13 @@ ${l.response}`).join(`
 `) + `
 
 ########## RESOLVED (after approval policy, hard-line suppression, stickiness, sampling) ##########
-` + (Object.keys(resolved).length ? present.filter((c) => resolved[c.id]).map((c) => `${c.id}: ${describeResolved(resolved[c.id])}`).join(`
+` + (Object.keys(resolved).length ? present.filter((c) => resolved[c.id]).map((c) => `${c.id}: ${describeResolved(resolved[c.id])}` + (tactics[c.id] && menus[c.id] ? `
+${describeTactic(tactics[c.id], menus[c.id])}` : opts.tacticsEnabled ? `
+  tactic: (none this turn)` : "")).join(`
 `) : "(no character got a decision this turn)"),
-    meta: `${Object.keys(resolved).length}/${present.length} decided \xB7 backend: ${opts.backend}${opts.backend === "jev" ? ` (${opts.jevModel} @ ${opts.jevEndpoint || "no endpoint"})` : ""}` + ` \xB7 temperature ${opts.temperature} \xB7 connection: ${opts.connectionId || "prose default"}`
+    meta: `${Object.keys(resolved).length}/${present.length} decided \xB7 backend: ${opts.backend}${opts.backend === "jev" ? ` (${opts.jevModel} @ ${opts.jevEndpoint || "no endpoint"})` : ""}` + ` \xB7 temperature ${opts.temperature} \xB7 tactics ${opts.tacticsEnabled ? `on (${Object.keys(tactics).length} chosen)` : "off"}` + ` \xB7 connection: ${opts.connectionId || "prose default"}`
   });
-  return { block, resolved };
+  return { block, resolved, tactics };
 }
 
 // src/backend.ts
@@ -2576,7 +2954,9 @@ var DEFAULT_CONFIG = {
   jevModel: "",
   jevApiKey: "",
   decisionTemperature: 0.7,
-  decisionTimeoutMs: 20000
+  decisionTimeoutMs: 30000,
+  tacticsEnabled: true,
+  tacticTimeoutMs: 20000
 };
 var CONFIG_PATH = "config.json";
 var config = { ...DEFAULT_CONFIG };
@@ -3036,6 +3416,9 @@ async function directorInterceptor(messages, context) {
           jevModel: jev.model,
           jevApiKey: config.jevApiKey,
           temperature: config.decisionTemperature,
+          tacticsEnabled: config.tacticsEnabled,
+          tacticTimeoutMs: config.tacticTimeoutMs,
+          directive: config.directive,
           signal: AbortSignal.timeout(config.decisionTimeoutMs),
           userId,
           connectionId,
@@ -3043,7 +3426,7 @@ async function directorInterceptor(messages, context) {
         });
         if (result?.block) {
           blocks.push(result.block);
-          notes.push(`stances: ${Object.entries(result.resolved).map(([id, r]) => `${id} ${r.stance}${r.torn ? "?" : ""}`).join(", ")}`);
+          notes.push(`stances: ${Object.entries(result.resolved).map(([id, r]) => `${id} ${r.stance}${r.torn ? "?" : ""}${result.tactics[id] && result.tactics[id].option.kind !== "other" ? ` (${result.tactics[id].option.text})` : ""}`).join(", ")}`);
         } else {
           spindle.log.info(`[psyche] decisions: ran but no character got a stance this turn (chat ${chatId})`);
         }
@@ -3169,7 +3552,9 @@ spindle.onFrontendMessage(async (payload, userId) => {
           jevModel: payload.config?.jevModel === undefined ? config.jevModel : String(payload.config.jevModel ?? "").trim(),
           jevApiKey: payload.config?.jevApiKey === undefined ? config.jevApiKey : String(payload.config.jevApiKey ?? ""),
           decisionTemperature: clampFloat(payload.config?.decisionTemperature ?? config.decisionTemperature, 0, 1.5),
-          decisionTimeoutMs: clampInt(payload.config?.decisionTimeoutMs ?? config.decisionTimeoutMs, 3000, 120000)
+          decisionTimeoutMs: clampInt(payload.config?.decisionTimeoutMs ?? config.decisionTimeoutMs, 3000, 120000),
+          tacticsEnabled: Boolean(payload.config?.tacticsEnabled ?? config.tacticsEnabled),
+          tacticTimeoutMs: clampInt(payload.config?.tacticTimeoutMs ?? config.tacticTimeoutMs, 3000, 120000)
         };
         await saveConfig();
         spindle.sendToFrontend({ type: "config", config }, userId);

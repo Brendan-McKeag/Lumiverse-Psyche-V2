@@ -277,27 +277,54 @@ export interface StoredDecision {
   torn: boolean
   hardLine: number
   leaves: number
+  /** HOW they carried the stance out, when the tactic layer ran and chose one */
+  tactic?: string
+  tacticIntensity?: number
+  tacticTorn?: boolean
   turnSeq: number
   at: number
+}
+
+export interface StoredTactic {
+  text: string
+  intensity: number
+  torn: boolean
 }
 
 /** Record this turn's decision on every present character (kept for
  *  stickiness next turn and for panel visibility); clears anyone who
  *  didn't get one so nothing stale drives a later turn. */
-export function applyDecisions(present: CharacterState[], resolved: Record<string, ResolvedDecision>, turnSeq: number): void {
+export function applyDecisions(
+  present: CharacterState[],
+  resolved: Record<string, ResolvedDecision>,
+  turnSeq: number,
+  tactics: Record<string, StoredTactic | undefined> = {},
+): void {
   const now = Date.now()
   for (const c of present) {
     const r = resolved[c.id]
+    const t = tactics[c.id]
     c.lastDecision = r
-      ? { stance: r.stance, margin: r.margin, torn: r.torn, hardLine: r.hardLine, leaves: r.leaves, turnSeq, at: now }
+      ? {
+          stance: r.stance,
+          margin: r.margin,
+          torn: r.torn,
+          hardLine: r.hardLine,
+          leaves: r.leaves,
+          ...(t ? { tactic: t.text, tacticIntensity: t.intensity, tacticTorn: t.torn } : {}),
+          turnSeq,
+          at: now,
+        }
       : undefined
   }
 }
 
 /* ------------------------------ render ------------------------------- */
 
-export function stanceLine(c: CharacterState, r: ResolvedDecision): string {
+/** `how` is the optional tactic clause (see tactics.ts tacticClause). */
+export function stanceLine(c: CharacterState, r: ResolvedDecision, how = ''): string {
   const parts: string[] = [`This turn, ${c.name} ${STANCE_CUE[r.stance]}`]
+  if (how.trim()) parts.push(how.trim())
   if (r.torn) parts.push(`They are visibly torn between that and the pull to ${STANCE_MEANING[r.runnerUp]} — it can waver mid-reply.`)
   if (r.hardLine >= HARD_LINE_THRESHOLD) parts.push('What was asked brushes something they will not cross, and they know it.')
   else if (r.hardLine >= 0.5) parts.push('What was asked is close to a line for them.')
@@ -305,14 +332,18 @@ export function stanceLine(c: CharacterState, r: ResolvedDecision): string {
   return parts.join(' ')
 }
 
-export function formatDecisionBlock(present: CharacterState[], resolved: Record<string, ResolvedDecision>): string | null {
+export function formatDecisionBlock(
+  present: CharacterState[],
+  resolved: Record<string, ResolvedDecision>,
+  how: Record<string, string> = {},
+): string | null {
   const rows = present.filter((c) => resolved[c.id])
   if (!rows.length) return null
   return [
     "[Psyche — each character's stance on the player's move this turn. This is what they DO",
     'with it, decided already; how it plays out on the page is yours. Never name or recite this.]',
     '',
-    ...rows.map((c) => `## ${c.name}\n${stanceLine(c, resolved[c.id])}`),
+    ...rows.map((c) => `## ${c.name}\n${stanceLine(c, resolved[c.id], how[c.id] ?? '')}`),
   ].join('\n\n')
 }
 
@@ -449,7 +480,9 @@ export type DecisionProvider = 'openrouter' | 'nanogpt' | 'typesafe' | 'custom'
 export const DECISION_PROVIDERS: Record<DecisionProvider, { label: string; endpoint: string; model: string }> = {
   openrouter: { label: 'OpenRouter', endpoint: 'https://openrouter.ai/api/alpha/decisions', model: 'typesafe/jev-latest' },
   nanogpt: { label: 'NanoGPT', endpoint: 'https://nano-gpt.com/api/v1/decisions', model: 'typesafe/jev-latest' },
-  typesafe: { label: 'TypeSafe (direct)', endpoint: 'https://thejevai.com/v1/systemone', model: 'jev-latest' },
+  // api.typesafe.ai is the API host (docs.typesafe.ai/api). thejevai.com/v1/systemone is the website's
+  // playground and only accepts a signed-in browser session, never an API key.
+  typesafe: { label: 'TypeSafe (direct)', endpoint: 'https://api.typesafe.ai/v1/systemone', model: 'jev-latest' },
   custom: { label: 'Custom URL', endpoint: '', model: 'typesafe/jev-latest' },
 }
 
@@ -480,8 +513,25 @@ export function jevRequestBody(state: string, questions: Record<string, Question
 
 /** A human-readable error from any of the front doors' error envelopes. */
 export function jevErrorMessage(raw: unknown): string | null {
-  const o = raw as { error?: unknown; message?: unknown } | null
+  const o = raw as { error?: unknown; message?: unknown; detail?: unknown } | null
   if (!o || typeof o !== 'object') return null
+  // TypeSafe direct: { detail: { error_type, message } }, or a validation list
+  // { detail: [ { loc, msg } ] } on 422
+  const d = o.detail
+  if (typeof d === 'string') return d
+  if (Array.isArray(d)) {
+    const parts = d
+      .map((x) => {
+        const xo = x as { loc?: unknown; msg?: unknown }
+        const loc = Array.isArray(xo?.loc) ? xo.loc.join('.') : ''
+        return typeof xo?.msg === 'string' ? (loc ? `${loc}: ${xo.msg}` : xo.msg) : ''
+      })
+      .filter(Boolean)
+    if (parts.length) return parts.join('; ')
+  } else if (d && typeof d === 'object') {
+    const dd = d as { message?: unknown; error_type?: unknown }
+    if (typeof dd.message === 'string') return `${dd.message}${typeof dd.error_type === 'string' ? ` (${dd.error_type})` : ''}`
+  }
   const e = o.error
   if (typeof e === 'string') return e
   if (e && typeof e === 'object') {

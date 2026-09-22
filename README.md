@@ -104,13 +104,27 @@ top of.
   that provider). Every failure path is "no stance this
   turn"; toggling it off restores the previous behavior exactly.
 
+  **Tactics** go one step further: once the stance is chosen, the engine
+  model — seeing the player's actual message — proposes a few specific ways
+  *this* character might carry it out ("brings up the debt the player still
+  owes"), each tagged with a kind (verbal, action, physical, leverage,
+  social, withdrawal) and an intensity (light / firm / all in). Code then
+  filters them: intensity is capped by how hot the character actually runs
+  right now, physical moves need something physical in play, near-duplicates
+  are dropped, and a few generic anchors plus an "other, in character"
+  option are always added. The judge picks one; approval steers away from
+  threats and leverage for characters who like you. The chosen move is
+  appended to the stance line ("How: calls it out directly (firmly).").
+  Generation only runs for the stance actually chosen, and has its own
+  timeout — a slow or failed tactic never costs the stance.
+
 ## Architecture
 
 A Bun workspace with two parts:
 
 | part | role |
 |------|------|
-| `packages/core` (`@psyche/core`) | pure logic, no host API, no network: the 40-emotion schema + saturation math (`affect.ts`), run-state types (`state.ts`), the approval ledger (`approval.ts`), the per-emotion behavioral rubrics (`rubrics.ts`), the live state→behavior directive renderer (`directive.ts`), the agent tool schemas + executors (`tools.ts`), the mind-update stage prompt (`prompts.ts`), the off-stage simulation stage (`offscreen.ts`), the Director (`director.ts`), and the decision layer — question sets, approval policy, stance resolution, and both judges' pure parsing (`decisions.ts`). |
+| `packages/core` (`@psyche/core`) | pure logic, no host API, no network: the 40-emotion schema + saturation math (`affect.ts`), run-state types (`state.ts`), the approval ledger (`approval.ts`), the per-emotion behavioral rubrics (`rubrics.ts`), the live state→behavior directive renderer (`directive.ts`), the agent tool schemas + executors (`tools.ts`), the mind-update stage prompt (`prompts.ts`), the off-stage simulation stage (`offscreen.ts`), the Director (`director.ts`), the decision layer — question sets, approval policy, stance resolution, and both judges' pure parsing (`decisions.ts`) — and tactics: generation prompt, plausibility filters, menu building and resolution (`tactics.ts`). |
 | `src/` (the plugin) | Lumiverse wiring: generation hooks, storage, the world-info injection interceptor, the pre-generation prompt interceptor shared by the Director and the decision layer, the two judge transports (`judge.ts`: engine-model JSON or the Jev AI HTTP API), and the frontend drawer. `runAgentForChat` in `backend.ts` runs two fail-soft post-hoc stages per turn — mind-update, then off-stage simulation — each with its own debug trace and settings toggle; the Director runs separately, pre-generation, registered via `spindle.registerInterceptor`. |
 
 Plugin state is keyed by `chatId` under the extension's scoped storage
@@ -132,8 +146,8 @@ rebuild before publishing.
 In the **Psyche** drawer tab: enable/disable, human texture (energy-matched
 replies), off-stage simulation (on/off + event budget), the Director
 (on/off, reasoning effort, timeout — experimental, off by default), the
-decision layer (on/off, judge backend, Jev API key, stance temperature,
-timeout), engine
+decision layer (on/off, judge backend, provider + API key, stance
+temperature, timeout, tactics on/off + timeout), engine
 rounds per turn, decay rate, an optional engine directive (tone steering,
 shared by mind update/off-stage sim/the Director), reset run, per-character
 presence toggle, direct editing of every emotion value + approval, and a
