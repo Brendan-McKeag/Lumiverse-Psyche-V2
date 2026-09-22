@@ -154,10 +154,25 @@ export function setup(ctx: SpindleFrontendContext) {
         <div><span class="ps-muted">Judge</span>
           <select class="ps-input ps-dec-backend">
             <option value="llm">Engine model, asked for probabilities (no new dependency; confidence is self-reported)</option>
-            <option value="jev">Jev AI decision model (calibrated probabilities; sends scene text to thejevai.com)</option>
+            <option value="jev">Jev decision model (calibrated probabilities, sub-second; via OpenRouter, NanoGPT, or TypeSafe)</option>
           </select>
         </div>
-        <div><span class="ps-muted">Jev AI API key (only used with the Jev judge)</span><input type="password" class="ps-input ps-jev-key" autocomplete="off" placeholder="jev-…" /></div>
+        <div class="ps-jev-opts" style="display:none; flex-direction:column; gap:8px">
+          <div class="ps-muted">Jev is not a chat model — it has its own decisions endpoint that a Lumiverse connection can't reach,
+          and Lumiverse never shares connection keys with extensions. So pick the provider and paste that provider's API key here
+          (an OpenRouter or NanoGPT key works; the same key you'd use for chat there).</div>
+          <div><span class="ps-muted">Provider</span>
+            <select class="ps-input ps-jev-provider">
+              <option value="openrouter">OpenRouter — typesafe/jev-latest (beta decisions endpoint)</option>
+              <option value="nanogpt">NanoGPT — typesafe/jev-latest</option>
+              <option value="typesafe">TypeSafe directly — thejevai.com</option>
+              <option value="custom">Custom URL</option>
+            </select>
+          </div>
+          <div><span class="ps-muted">API key for that provider</span><input type="password" class="ps-input ps-jev-key" autocomplete="off" placeholder="sk-or-… / nano key / jev key" /></div>
+          <div><span class="ps-muted">Endpoint <span class="ps-jev-endpoint-hint"></span></span><input type="text" class="ps-input ps-jev-endpoint" placeholder="leave blank for the provider's default" /></div>
+          <div><span class="ps-muted">Model id <span class="ps-jev-model-hint"></span></span><input type="text" class="ps-input ps-jev-model" placeholder="leave blank for the provider's default" /></div>
+        </div>
         <div><span class="ps-muted">Stance temperature (0 = always the likeliest stance; 0.7 = human; 1 = straight from the distribution)</span><input type="number" class="ps-input ps-dec-temp" min="0" max="1.5" step="0.05" /></div>
         <div><span class="ps-muted">Timeout (ms) — the reply goes out without a stance if exceeded</span><input type="number" class="ps-input ps-dec-timeout" min="3000" max="120000" step="1000" /></div>
         <div class="ps-row"><button class="ps-btn ps-dec-save">Save settings</button></div>
@@ -216,6 +231,28 @@ export function setup(ctx: SpindleFrontendContext) {
   const decEnEl = q<HTMLInputElement>('.ps-dec-en')
   const decBackendEl = q<HTMLSelectElement>('.ps-dec-backend')
   const jevKeyEl = q<HTMLInputElement>('.ps-jev-key')
+  const jevOptsEl = q<HTMLElement>('.ps-jev-opts')
+  const jevProviderEl = q<HTMLSelectElement>('.ps-jev-provider')
+  const jevEndpointEl = q<HTMLInputElement>('.ps-jev-endpoint')
+  const jevModelEl = q<HTMLInputElement>('.ps-jev-model')
+  const jevEndpointHint = q<HTMLElement>('.ps-jev-endpoint-hint')
+  const jevModelHint = q<HTMLElement>('.ps-jev-model-hint')
+  const JEV_PRESETS: Record<string, { endpoint: string; model: string }> = {
+    openrouter: { endpoint: 'https://openrouter.ai/api/alpha/decisions', model: 'typesafe/jev-latest' },
+    nanogpt: { endpoint: 'https://nano-gpt.com/api/v1/decisions', model: 'typesafe/jev-latest' },
+    typesafe: { endpoint: 'https://thejevai.com/v1/systemone', model: 'jev-latest' },
+    custom: { endpoint: '', model: 'typesafe/jev-latest' },
+  }
+  function renderJevOpts() {
+    jevOptsEl.style.display = decBackendEl.value === 'jev' ? 'flex' : 'none'
+    const preset = JEV_PRESETS[jevProviderEl.value] ?? JEV_PRESETS.openrouter
+    const custom = jevProviderEl.value === 'custom'
+    jevEndpointHint.textContent = custom ? '(required)' : `(default: ${preset.endpoint})`
+    jevModelHint.textContent = `(default: ${preset.model})`
+    jevEndpointEl.placeholder = custom ? 'https://…/decisions' : "leave blank for the provider's default"
+  }
+  decBackendEl.addEventListener('change', renderJevOpts)
+  jevProviderEl.addEventListener('change', renderJevOpts)
   const decTempEl = q<HTMLInputElement>('.ps-dec-temp')
   const decTimeoutEl = q<HTMLInputElement>('.ps-dec-timeout')
   const canonEl = q<HTMLTextAreaElement>('.ps-canon')
@@ -502,6 +539,9 @@ export function setup(ctx: SpindleFrontendContext) {
         directorTimeoutMs: Number(directorTimeoutEl.value),
         decisionsEnabled: decEnEl.checked,
         decisionsBackend: decBackendEl.value,
+        jevProvider: jevProviderEl.value,
+        jevEndpoint: jevEndpointEl.value,
+        jevModel: jevModelEl.value,
         jevApiKey: jevKeyEl.value,
         decisionTemperature: Number(decTempEl.value),
         decisionTimeoutMs: Number(decTimeoutEl.value),
@@ -554,7 +594,11 @@ export function setup(ctx: SpindleFrontendContext) {
         directorTimeoutEl.value = String(c.directorTimeoutMs ?? 240000)
         decEnEl.checked = c.decisionsEnabled !== false
         decBackendEl.value = c.decisionsBackend === 'jev' ? 'jev' : 'llm'
+        jevProviderEl.value = JEV_PRESETS[c.jevProvider] ? c.jevProvider : 'openrouter'
+        jevEndpointEl.value = c.jevEndpoint ?? ''
+        jevModelEl.value = c.jevModel ?? ''
         jevKeyEl.value = c.jevApiKey ?? ''
+        renderJevOpts()
         decTempEl.value = String(c.decisionTemperature ?? 0.7)
         decTimeoutEl.value = String(c.decisionTimeoutMs ?? 20000)
         roundsEl.value = String(c.maxRounds ?? 8)

@@ -400,6 +400,8 @@ export async function runDecisionStage(
     recentScene: string
     cardContext: string
     backend: JudgeBackend
+    jevEndpoint: string
+    jevModel: string
     jevApiKey: string
     temperature: number
     signal?: AbortSignal
@@ -419,6 +421,8 @@ export async function runDecisionStage(
       const state = decisionState(c, opts.playerMessage, opts.recentScene, opts.cardContext)
       const judge = makeJudge({
         backend: opts.backend,
+        jevEndpoint: opts.jevEndpoint,
+        jevModel: opts.jevModel,
         jevApiKey: opts.jevApiKey,
         userId: opts.userId,
         connectionId: opts.connectionId,
@@ -447,7 +451,7 @@ export async function runDecisionStage(
             .join('\n')
         : '(no character got a decision this turn)'),
     meta:
-      `${Object.keys(resolved).length}/${present.length} decided · backend: ${opts.backend}` +
+      `${Object.keys(resolved).length}/${present.length} decided · backend: ${opts.backend}${opts.backend === 'jev' ? ` (${opts.jevModel} @ ${opts.jevEndpoint || 'no endpoint'})` : ''}` +
       ` · temperature ${opts.temperature} · connection: ${opts.connectionId || 'prose default'}`,
   })
 

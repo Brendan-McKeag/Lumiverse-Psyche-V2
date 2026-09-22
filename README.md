@@ -96,9 +96,12 @@ top of.
   into that generation's prompt ("This turn, Mara says no, and holds it…"),
   then discarded. Two judges behind one interface: the engine model asked
   for probabilities as JSON (default, no new dependency, self-reported
-  confidence), or the [Jev AI](https://thejevai.com) decision-model API
-  (calibrated probabilities, sub-second, but sends scene text to a third
-  party — opt-in, keyed in settings). Every failure path is "no stance this
+  confidence), or the [Jev](https://thejevai.com) decision model
+  (calibrated probabilities, sub-second) through OpenRouter, NanoGPT, or
+  TypeSafe directly — it is not a chat model, so it has its own decisions
+  endpoint that a Lumiverse connection can't reach; you paste that
+  provider's API key into Psyche's settings (opt-in; scene text goes to
+  that provider). Every failure path is "no stance this
   turn"; toggling it off restores the previous behavior exactly.
 
 ## Architecture

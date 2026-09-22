@@ -2154,9 +2154,20 @@ function distributionFrom(v, keys) {
   }
   return null;
 }
-var JEV_ENDPOINT = "https://thejevai.com/v1/systemone";
-var JEV_MODEL = "jev-latest";
-function jevRequestBody(state, questions) {
+var DECISION_PROVIDERS = {
+  openrouter: { label: "OpenRouter", endpoint: "https://openrouter.ai/api/alpha/decisions", model: "typesafe/jev-latest" },
+  nanogpt: { label: "NanoGPT", endpoint: "https://nano-gpt.com/api/v1/decisions", model: "typesafe/jev-latest" },
+  typesafe: { label: "TypeSafe (direct)", endpoint: "https://thejevai.com/v1/systemone", model: "jev-latest" },
+  custom: { label: "Custom URL", endpoint: "", model: "typesafe/jev-latest" }
+};
+var isDecisionProvider = (s) => typeof s === "string" && Object.prototype.hasOwnProperty.call(DECISION_PROVIDERS, s);
+function resolveDecisionProvider(provider, endpointOverride = "", modelOverride = "") {
+  const preset = DECISION_PROVIDERS[provider] ?? DECISION_PROVIDERS.openrouter;
+  const endpoint = (provider === "custom" ? endpointOverride : endpointOverride || preset.endpoint).trim();
+  const model = (modelOverride || preset.model).trim();
+  return { endpoint, model };
+}
+function jevRequestBody(state, questions, model) {
   const q = {};
   for (const [id, def] of Object.entries(questions)) {
     if (def.kind === "choice")
@@ -2166,7 +2177,21 @@ function jevRequestBody(state, questions) {
     else
       q[id] = { type: "noul", instructions: def.instructions };
   }
-  return { state, model: JEV_MODEL, questions: q };
+  return { state, model, questions: q };
+}
+function jevErrorMessage(raw) {
+  const o = raw;
+  if (!o || typeof o !== "object")
+    return null;
+  const e = o.error;
+  if (typeof e === "string")
+    return e;
+  if (e && typeof e === "object") {
+    const eo = e;
+    if (typeof eo.message === "string")
+      return `${eo.message}${eo.code !== undefined ? ` (${String(eo.code)})` : ""}`;
+  }
+  return typeof o.message === "string" ? o.message : null;
 }
 function parseJevResponse(raw, questions) {
   const out = {};
@@ -2203,7 +2228,7 @@ function describeResolved(r) {
 
 // src/judge.ts
 function makeJudge(opts) {
-  if (opts.backend === "jev" && opts.jevApiKey.trim())
+  if (opts.backend === "jev" && opts.jevApiKey.trim() && opts.jevEndpoint.trim())
     return jevJudge(opts);
   return llmJudge(opts);
 }
@@ -2241,25 +2266,27 @@ ${m.content}`).join(`
 function jevJudge(opts) {
   return {
     async classify(state, questions, signal) {
-      const body = jevRequestBody(state, questions);
-      const req = JSON.stringify(body, null, 2);
+      const body = jevRequestBody(state, questions, opts.jevModel);
+      const req = `POST ${opts.jevEndpoint}
+${JSON.stringify(body, null, 2)}`;
       try {
-        const res = await fetch(JEV_ENDPOINT, {
+        const res = await fetch(opts.jevEndpoint, {
           method: "POST",
           headers: { Authorization: `Bearer ${opts.jevApiKey.trim()}`, "Content-Type": "application/json" },
           body: JSON.stringify(body),
           signal
         });
         const text = await res.text();
-        opts.onCall?.({ label: `jev ${res.status}`, request: req, response: text });
-        if (!res.ok)
-          return {};
-        let json;
+        let json = null;
         try {
           json = JSON.parse(text);
-        } catch {
+        } catch {}
+        const err = !res.ok ? jevErrorMessage(json) ?? `HTTP ${res.status}` : null;
+        opts.onCall?.({ label: `jev ${res.status}`, request: req, response: err ? `Error: ${err}
+
+${text}` : text });
+        if (err || json === null)
           return {};
-        }
         return parseJevResponse(json, questions);
       } catch (err) {
         opts.onCall?.({ label: "jev", request: req, response: `Error: ${String(err)}` });
@@ -2495,6 +2522,8 @@ async function runDecisionStage(run, opts) {
     const state = decisionState(c, opts.playerMessage, opts.recentScene, opts.cardContext);
     const judge = makeJudge({
       backend: opts.backend,
+      jevEndpoint: opts.jevEndpoint,
+      jevModel: opts.jevModel,
       jevApiKey: opts.jevApiKey,
       userId: opts.userId,
       connectionId: opts.connectionId,
@@ -2521,7 +2550,7 @@ ${l.response}`).join(`
 ########## RESOLVED (after approval policy, hard-line suppression, stickiness, sampling) ##########
 ` + (Object.keys(resolved).length ? present.filter((c) => resolved[c.id]).map((c) => `${c.id}: ${describeResolved(resolved[c.id])}`).join(`
 `) : "(no character got a decision this turn)"),
-    meta: `${Object.keys(resolved).length}/${present.length} decided \xB7 backend: ${opts.backend}` + ` \xB7 temperature ${opts.temperature} \xB7 connection: ${opts.connectionId || "prose default"}`
+    meta: `${Object.keys(resolved).length}/${present.length} decided \xB7 backend: ${opts.backend}${opts.backend === "jev" ? ` (${opts.jevModel} @ ${opts.jevEndpoint || "no endpoint"})` : ""}` + ` \xB7 temperature ${opts.temperature} \xB7 connection: ${opts.connectionId || "prose default"}`
   });
   return { block, resolved };
 }
@@ -2542,6 +2571,9 @@ var DEFAULT_CONFIG = {
   directorTimeoutMs: 240000,
   decisionsEnabled: true,
   decisionsBackend: "llm",
+  jevProvider: "openrouter",
+  jevEndpoint: "",
+  jevModel: "",
   jevApiKey: "",
   decisionTemperature: 0.7,
   decisionTimeoutMs: 20000
@@ -2994,11 +3026,14 @@ async function directorInterceptor(messages, context) {
     }
     if (config.decisionsEnabled) {
       try {
+        const jev = resolveDecisionProvider(config.jevProvider, config.jevEndpoint, config.jevModel);
         const result = await runDecisionStage(run, {
           playerMessage,
           recentScene,
           cardContext,
           backend: config.decisionsBackend,
+          jevEndpoint: jev.endpoint,
+          jevModel: jev.model,
           jevApiKey: config.jevApiKey,
           temperature: config.decisionTemperature,
           signal: AbortSignal.timeout(config.decisionTimeoutMs),
@@ -3129,6 +3164,9 @@ spindle.onFrontendMessage(async (payload, userId) => {
           directorTimeoutMs: clampInt(payload.config?.directorTimeoutMs ?? config.directorTimeoutMs, 30000, 600000),
           decisionsEnabled: Boolean(payload.config?.decisionsEnabled ?? config.decisionsEnabled),
           decisionsBackend: payload.config?.decisionsBackend === "jev" ? "jev" : payload.config?.decisionsBackend === "llm" ? "llm" : config.decisionsBackend,
+          jevProvider: isDecisionProvider(payload.config?.jevProvider) ? payload.config.jevProvider : config.jevProvider,
+          jevEndpoint: payload.config?.jevEndpoint === undefined ? config.jevEndpoint : String(payload.config.jevEndpoint ?? "").trim(),
+          jevModel: payload.config?.jevModel === undefined ? config.jevModel : String(payload.config.jevModel ?? "").trim(),
           jevApiKey: payload.config?.jevApiKey === undefined ? config.jevApiKey : String(payload.config.jevApiKey ?? ""),
           decisionTemperature: clampFloat(payload.config?.decisionTemperature ?? config.decisionTemperature, 0, 1.5),
           decisionTimeoutMs: clampInt(payload.config?.decisionTimeoutMs ?? config.decisionTimeoutMs, 3000, 120000)

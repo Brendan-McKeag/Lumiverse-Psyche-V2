@@ -436,21 +436,59 @@ function distributionFrom(v: unknown, keys: string[]): Record<string, number> | 
   return null
 }
 
-/* --------------------------- transport: Jev AI ----------------------- */
-/* https://thejevai.com/docs — POST /v1/systemone with { state, model,
- * questions }, answers come back keyed by question id. */
+/* ------------------- transport: the Jev decisions API ----------------- */
+/* One wire format, several front doors. TypeSafe's own endpoint, OpenRouter's
+ * decisions endpoint, and NanoGPT all take POST { state, model, questions }
+ * and return { answers } keyed by question id — only the URL, the model id
+ * and whose API key differ. (This is NOT chat completions: a Lumiverse
+ * connection profile can't reach it, which is why the key lives in Psyche's
+ * own settings.) */
 
-export const JEV_ENDPOINT = 'https://thejevai.com/v1/systemone'
-export const JEV_MODEL = 'jev-latest'
+export type DecisionProvider = 'openrouter' | 'nanogpt' | 'typesafe' | 'custom'
 
-export function jevRequestBody(state: string, questions: Record<string, Question>): Record<string, unknown> {
+export const DECISION_PROVIDERS: Record<DecisionProvider, { label: string; endpoint: string; model: string }> = {
+  openrouter: { label: 'OpenRouter', endpoint: 'https://openrouter.ai/api/alpha/decisions', model: 'typesafe/jev-latest' },
+  nanogpt: { label: 'NanoGPT', endpoint: 'https://nano-gpt.com/api/v1/decisions', model: 'typesafe/jev-latest' },
+  typesafe: { label: 'TypeSafe (direct)', endpoint: 'https://thejevai.com/v1/systemone', model: 'jev-latest' },
+  custom: { label: 'Custom URL', endpoint: '', model: 'typesafe/jev-latest' },
+}
+
+export const isDecisionProvider = (s: unknown): s is DecisionProvider =>
+  typeof s === 'string' && Object.prototype.hasOwnProperty.call(DECISION_PROVIDERS, s)
+
+/** The endpoint + model to actually call: the preset's, unless overridden. */
+export function resolveDecisionProvider(
+  provider: DecisionProvider,
+  endpointOverride = '',
+  modelOverride = '',
+): { endpoint: string; model: string } {
+  const preset = DECISION_PROVIDERS[provider] ?? DECISION_PROVIDERS.openrouter
+  const endpoint = (provider === 'custom' ? endpointOverride : endpointOverride || preset.endpoint).trim()
+  const model = (modelOverride || preset.model).trim()
+  return { endpoint, model }
+}
+
+export function jevRequestBody(state: string, questions: Record<string, Question>, model: string): Record<string, unknown> {
   const q: Record<string, unknown> = {}
   for (const [id, def] of Object.entries(questions)) {
     if (def.kind === 'choice') q[id] = { type: 'choice', instructions: def.instructions, criteria: def.options }
     else if (def.kind === 'score') q[id] = { type: 'score', instructions: def.instructions, criteria: def.rubric }
     else q[id] = { type: 'noul', instructions: def.instructions }
   }
-  return { state, model: JEV_MODEL, questions: q }
+  return { state, model, questions: q }
+}
+
+/** A human-readable error from any of the front doors' error envelopes. */
+export function jevErrorMessage(raw: unknown): string | null {
+  const o = raw as { error?: unknown; message?: unknown } | null
+  if (!o || typeof o !== 'object') return null
+  const e = o.error
+  if (typeof e === 'string') return e
+  if (e && typeof e === 'object') {
+    const eo = e as { message?: unknown; code?: unknown }
+    if (typeof eo.message === 'string') return `${eo.message}${eo.code !== undefined ? ` (${String(eo.code)})` : ''}`
+  }
+  return typeof o.message === 'string' ? o.message : null
 }
 
 export function parseJevResponse(raw: unknown, questions: Record<string, Question>): Record<string, Decision> {

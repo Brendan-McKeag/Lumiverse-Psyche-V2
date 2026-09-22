@@ -10,7 +10,7 @@ import {
   parseLlmJudgeOutput,
   jevRequestBody,
   parseJevResponse,
-  JEV_ENDPOINT,
+  jevErrorMessage,
 } from '@psyche/core/decisions'
 import { extractJson } from '@psyche/core/prompts'
 
@@ -24,9 +24,10 @@ import { extractJson } from '@psyche/core/prompts'
  *     dependency, works everywhere Psyche already works. Its probabilities
  *     are self-reported, so treat them as ordinal, not calibrated.
  *
- *   • JevJudge — the Jev AI decision-model API over HTTP. Real probabilities
- *     and sub-second latency, at the cost of sending scene text to a third
- *     party. Opt-in, keyed by the operator.
+ *   • JevJudge — the Jev decision-model API over HTTP, through whichever
+ *     front door the operator keys: OpenRouter, NanoGPT, or TypeSafe
+ *     directly. Real probabilities and sub-second latency, at the cost of
+ *     sending scene text to that provider. Opt-in.
  *
  * Both record every call for the debug tab. Neither throws past
  * classify(): a failure returns an empty answer set and the stage treats
@@ -43,6 +44,9 @@ export type JudgeBackend = 'llm' | 'jev'
 
 export interface JudgeOpts {
   backend: JudgeBackend
+  /** resolved decisions endpoint (see resolveDecisionProvider) */
+  jevEndpoint: string
+  jevModel: string
   jevApiKey: string
   userId?: string
   connectionId?: string
@@ -50,7 +54,7 @@ export interface JudgeOpts {
 }
 
 export function makeJudge(opts: JudgeOpts): Judge {
-  if (opts.backend === 'jev' && opts.jevApiKey.trim()) return jevJudge(opts)
+  if (opts.backend === 'jev' && opts.jevApiKey.trim() && opts.jevEndpoint.trim()) return jevJudge(opts)
   return llmJudge(opts)
 }
 
@@ -90,24 +94,25 @@ export function llmJudge(opts: JudgeOpts): Judge {
 export function jevJudge(opts: JudgeOpts): Judge {
   return {
     async classify(state: string, questions: Record<string, Question>, signal?: AbortSignal) {
-      const body = jevRequestBody(state, questions)
-      const req = JSON.stringify(body, null, 2)
+      const body = jevRequestBody(state, questions, opts.jevModel)
+      const req = `POST ${opts.jevEndpoint}\n${JSON.stringify(body, null, 2)}`
       try {
-        const res = await fetch(JEV_ENDPOINT, {
+        const res = await fetch(opts.jevEndpoint, {
           method: 'POST',
           headers: { Authorization: `Bearer ${opts.jevApiKey.trim()}`, 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
           signal,
         })
         const text = await res.text()
-        opts.onCall?.({ label: `jev ${res.status}`, request: req, response: text })
-        if (!res.ok) return {}
-        let json: unknown
+        let json: unknown = null
         try {
           json = JSON.parse(text)
         } catch {
-          return {}
+          /* non-JSON body; surfaced below */
         }
+        const err = !res.ok ? jevErrorMessage(json) ?? `HTTP ${res.status}` : null
+        opts.onCall?.({ label: `jev ${res.status}`, request: req, response: err ? `Error: ${err}\n\n${text}` : text })
+        if (err || json === null) return {}
         return parseJevResponse(json, questions)
       } catch (err) {
         opts.onCall?.({ label: 'jev', request: req, response: `Error: ${String(err)}` })

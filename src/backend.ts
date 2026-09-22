@@ -17,6 +17,7 @@ import {
 } from './run'
 import { runPsycheAgent, runOffscreenStage, runDirectorStage, runDecisionStage, AGENT_SENTINEL, StageTrace } from './agent'
 import type { JudgeBackend } from './judge'
+import { resolveDecisionProvider, isDecisionProvider, type DecisionProvider } from '@psyche/core/decisions'
 import { EMOTIONS, EMOTION_BY_KEY, describeValue, relaxToward } from '@psyche/core/affect'
 import { OFFSCREEN_EVENT_BUDGET } from '@psyche/core/offscreen'
 
@@ -65,9 +66,15 @@ interface Config {
    * and fails open the same way. Toggle off to get exactly the old behavior.
    */
   decisionsEnabled: boolean
-  /** 'llm' = the user's own connection asked for probabilities; 'jev' = the Jev AI decision-model API */
+  /** 'llm' = the user's own connection asked for probabilities; 'jev' = the Jev decision-model API */
   decisionsBackend: JudgeBackend
-  /** Jev AI API key — only used when decisionsBackend is 'jev'. Stored in this extension's config.json. */
+  /** which front door serves the Jev decisions API — the wire format is the same, only URL/model/key differ */
+  jevProvider: DecisionProvider
+  /** endpoint override; required for 'custom', otherwise the preset is used when blank */
+  jevEndpoint: string
+  /** model id override; blank = the preset's default */
+  jevModel: string
+  /** API key for that provider (an OpenRouter/NanoGPT/TypeSafe key). Lumiverse never exposes connection keys to extensions, so it lives here, in this extension's config.json. */
   jevApiKey: string
   /** stance sampling temperature: 0 = always the most likely stance, 1 = draw straight from the distribution */
   decisionTemperature: number
@@ -89,6 +96,9 @@ const DEFAULT_CONFIG: Config = {
   directorTimeoutMs: 240000,
   decisionsEnabled: true,
   decisionsBackend: 'llm',
+  jevProvider: 'openrouter',
+  jevEndpoint: '',
+  jevModel: '',
   jevApiKey: '',
   decisionTemperature: 0.7,
   decisionTimeoutMs: 20000,
@@ -641,11 +651,14 @@ async function directorInterceptor(messages: LlmMessage[], context: unknown): Pr
     // most specific instruction sits closest to the player's message.
     if (config.decisionsEnabled) {
       try {
+        const jev = resolveDecisionProvider(config.jevProvider, config.jevEndpoint, config.jevModel)
         const result = await runDecisionStage(run, {
           playerMessage,
           recentScene,
           cardContext,
           backend: config.decisionsBackend,
+          jevEndpoint: jev.endpoint,
+          jevModel: jev.model,
           jevApiKey: config.jevApiKey,
           temperature: config.decisionTemperature,
           signal: AbortSignal.timeout(config.decisionTimeoutMs),
@@ -788,6 +801,9 @@ spindle.onFrontendMessage(async (payload: any, userId) => {
         directorTimeoutMs: clampInt(payload.config?.directorTimeoutMs ?? config.directorTimeoutMs, 30000, 600000),
         decisionsEnabled: Boolean(payload.config?.decisionsEnabled ?? config.decisionsEnabled),
         decisionsBackend: payload.config?.decisionsBackend === 'jev' ? 'jev' : payload.config?.decisionsBackend === 'llm' ? 'llm' : config.decisionsBackend,
+        jevProvider: isDecisionProvider(payload.config?.jevProvider) ? payload.config.jevProvider : config.jevProvider,
+        jevEndpoint: payload.config?.jevEndpoint === undefined ? config.jevEndpoint : String(payload.config.jevEndpoint ?? '').trim(),
+        jevModel: payload.config?.jevModel === undefined ? config.jevModel : String(payload.config.jevModel ?? '').trim(),
         jevApiKey: payload.config?.jevApiKey === undefined ? config.jevApiKey : String(payload.config.jevApiKey ?? ''),
         decisionTemperature: clampFloat(payload.config?.decisionTemperature ?? config.decisionTemperature, 0, 1.5),
         decisionTimeoutMs: clampInt(payload.config?.decisionTimeoutMs ?? config.decisionTimeoutMs, 3000, 120000),

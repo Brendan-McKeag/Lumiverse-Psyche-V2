@@ -11,6 +11,9 @@ import {
   parseLlmJudgeOutput,
   parseJevResponse,
   jevRequestBody,
+  jevErrorMessage,
+  resolveDecisionProvider,
+  DECISION_PROVIDERS,
   llmJudgeUserContent,
   approvalWeights,
   HARD_LINE_THRESHOLD,
@@ -205,8 +208,8 @@ describe('parseLlmJudgeOutput', () => {
 describe('Jev transport (pure parts)', () => {
   const q = turnQuestions(mara())
   test('request body follows the documented shape', () => {
-    const body = jevRequestBody('S', q) as { model: string; state: string; questions: Record<string, { type: string; criteria?: unknown }> }
-    expect(body.model).toBe('jev-latest')
+    const body = jevRequestBody('S', q, 'typesafe/jev-latest') as { model: string; state: string; questions: Record<string, { type: string; criteria?: unknown }> }
+    expect(body.model).toBe('typesafe/jev-latest')
     expect(body.state).toBe('S')
     expect(body.questions.stance.type).toBe('choice')
     expect(Object.keys(body.questions.stance.criteria as object)).toEqual([...STANCES])
@@ -231,5 +234,18 @@ describe('Jev transport (pure parts)', () => {
   })
   test('a response with no answers yields nothing', () => {
     expect(parseJevResponse({ error: 'nope' }, q)).toEqual({})
+  })
+  test('provider presets resolve, overrides win, custom needs its own URL', () => {
+    expect(resolveDecisionProvider('openrouter')).toEqual({ endpoint: DECISION_PROVIDERS.openrouter.endpoint, model: 'typesafe/jev-latest' })
+    expect(resolveDecisionProvider('nanogpt', '', 'typesafe/jev-1.13').model).toBe('typesafe/jev-1.13')
+    expect(resolveDecisionProvider('typesafe').model).toBe('jev-latest')
+    expect(resolveDecisionProvider('custom').endpoint).toBe('')
+    expect(resolveDecisionProvider('custom', 'https://x/decisions').endpoint).toBe('https://x/decisions')
+  })
+  test('error envelopes from every front door read as one message', () => {
+    expect(jevErrorMessage({ error: { message: 'No cookie auth credentials found', code: 401 } })).toBe('No cookie auth credentials found (401)')
+    expect(jevErrorMessage({ error: { message: 'Invalid Authentication', type: 'invalid_request_error', code: 'missing_api_key' } })).toContain('missing_api_key')
+    expect(jevErrorMessage({ error: 'plain' })).toBe('plain')
+    expect(jevErrorMessage({ answers: {} })).toBeNull()
   })
 })
