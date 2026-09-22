@@ -1,4 +1,5 @@
 import { neutralVector } from './affect'
+import type { StoredDecision } from './decisions'
 
 /** Max entries kept in a character's `knowledge` log; oldest dropped first. */
 export const KNOWLEDGE_CAP = 20
@@ -77,6 +78,14 @@ export interface CharacterState {
    * should do — it's backward-looking, not an agenda.
    */
   canon?: string
+  /**
+   * EPHEMERAL-ISH — the decision layer's read of what this character DID
+   * with the player's move last turn (stance + how sure). Kept one turn for
+   * stickiness (people don't flip because the player asked twice) and for
+   * panel visibility; never re-injected from stored state. Cleared on any
+   * turn the stage didn't run for them.
+   */
+  lastDecision?: StoredDecision
   updatedAt: number
 }
 

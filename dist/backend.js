@@ -92,8 +92,8 @@ var clampUni = (v) => Math.max(0, Math.min(VMAX, v));
 var clampBi = (v) => Math.max(-VMAX, Math.min(VMAX, v));
 function toPressure(def, value) {
   if (def.kind === "bipolar") {
-    const v2 = clampBi(value);
-    return Math.atanh(v2);
+    const v = clampBi(value);
+    return Math.atanh(v);
   }
   const v = clampUni(value);
   return -Math.log(1 - v);
@@ -809,9 +809,9 @@ async function ensureInjectionEntry(characterId, characterName, userId) {
       fallback: null
     });
     if (meta?.entryId) {
-      const entry2 = await spindle.world_books.entries.get(meta.entryId, userId).catch(() => null);
-      if (entry2) {
-        if (entry2.disabled || !entry2.constant) {
+      const entry = await spindle.world_books.entries.get(meta.entryId, userId).catch(() => null);
+      if (entry) {
+        if (entry.disabled || !entry.constant) {
           await spindle.world_books.entries.update(meta.entryId, { disabled: false, constant: true }, userId).catch(() => {});
         }
         return meta.entryId;
@@ -847,8 +847,8 @@ async function ensureInjectionEntry(characterId, characterName, userId) {
 // packages/core/src/tools.ts
 var str = (a, k, d = "") => typeof a[k] === "string" ? a[k] : d;
 var num = (a, k) => {
-  const v2 = a[k];
-  return typeof v2 === "number" && Number.isFinite(v2) ? v2 : null;
+  const v = a[k];
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
 };
 var bool = (a, k) => Boolean(a[k]);
 var EMOTION_LIST = EMOTION_KEYS.join(", ");
@@ -1095,10 +1095,10 @@ ${feelings}`
       if (value === null)
         return "set_emotion requires a numeric value.";
       backfillEmotions(c);
-      const v2 = clampForKind(key, value);
-      c.emotions[key].value = v2;
+      const v = clampForKind(key, value);
+      c.emotions[key].value = v;
       c.updatedAt = Date.now();
-      return `${c.id} ${key} set to ${v2.toFixed(3)} (${describeValue(def, v2).label}).`;
+      return `${c.id} ${key} set to ${v.toFixed(3)} (${describeValue(def, v).label}).`;
     }
     case "set_baseline": {
       const c = find(run, str(args, "character_id"));
@@ -1180,11 +1180,11 @@ function extractJson(text) {
   return salvageJson(raw.slice(start));
 }
 function salvageJson(s) {
-  const scan = (str2) => {
+  const scan = (str) => {
     let inString = false;
     let escaped = false;
     const stack = [];
-    for (const ch of str2) {
+    for (const ch of str) {
       if (inString) {
         if (escaped)
           escaped = false;
@@ -1224,7 +1224,7 @@ function salvageJson(s) {
   }
   return null;
 }
-function updateSystemPrompt(directive2, includeRubrics = true) {
+function updateSystemPrompt(directive, includeRubrics = true) {
   return [
     AGENT_SENTINEL,
     "You are Psyche, the silent mind-engine behind a roleplay. You are NOT speaking to",
@@ -1361,19 +1361,19 @@ function updateSystemPrompt(directive2, includeRubrics = true) {
       "the behavior you actually expect to see next turn:",
       rubricTableText()
     ] : [],
-    directive2.trim() ? `
+    directive.trim() ? `
 OPERATOR DIRECTIVE:
-${directive2.trim()}` : ""
+${directive.trim()}` : ""
   ].join(`
 `);
 }
 function emotionSummary(c) {
   const notable = EMOTIONS.filter((def) => {
-    const v2 = c.emotions[def.key]?.value ?? 0;
-    return def.kind === "bipolar" ? Math.abs(v2) >= 0.15 : v2 >= 0.2;
+    const v = c.emotions[def.key]?.value ?? 0;
+    return def.kind === "bipolar" ? Math.abs(v) >= 0.15 : v >= 0.2;
   }).map((def) => {
-    const v2 = c.emotions[def.key]?.value ?? 0;
-    return `${def.key} ${v2.toFixed(2)} (${def.kind === "bipolar" ? "axis" : "level"})`;
+    const v = c.emotions[def.key]?.value ?? 0;
+    return `${def.key} ${v.toFixed(2)} (${def.kind === "bipolar" ? "axis" : "level"})`;
   }).join(", ");
   return notable || "all quiet";
 }
@@ -1435,7 +1435,7 @@ function salientFeelings(c) {
     return "quiet, even-keeled";
   return rows.map((r) => `${r.def.label.toLowerCase().split(" (")[0]} (${describeValue(r.def, r.value).label})`).join(", ");
 }
-function castingSystemPrompt(directive2 = "") {
+function castingSystemPrompt(directive = "") {
   return [
     AGENT_SENTINEL,
     "You are casting this turn's off-stage activity. The player is on stage with",
@@ -1455,9 +1455,9 @@ function castingSystemPrompt(directive2 = "") {
     "written later, by someone else, with more room to think it through.",
     "",
     'Return ONLY JSON: { "groups": [ { "characterIds": ["<id>", ...], "steer": "<optional, only for 2+>" } ] }',
-    directive2.trim() ? `
+    directive.trim() ? `
 OPERATOR DIRECTIVE:
-${directive2.trim()}` : ""
+${directive.trim()}` : ""
   ].join(`
 `);
 }
@@ -1492,7 +1492,7 @@ function parseCasting(raw, offStageIds) {
   }
   return { groups };
 }
-function unitSystemPrompt(eventBudget, directive2 = "") {
+function unitSystemPrompt(eventBudget, directive = "") {
   return [
     AGENT_SENTINEL,
     "You are the prose writer for this scene \u2014 exactly as much as you would be if the",
@@ -1552,9 +1552,9 @@ function unitSystemPrompt(eventBudget, directive2 = "") {
     "",
     "Feelings move gently \u2014 intensity roughly \xB10.5 to \xB12 unless something real and",
     "specific happened to them. Only use the character ids you were given.",
-    directive2.trim() ? `
+    directive.trim() ? `
 OPERATOR DIRECTIVE:
-${directive2.trim()}` : ""
+${directive.trim()}` : ""
   ].join(`
 `);
 }
@@ -1705,7 +1705,7 @@ function applyOffscreenResult(run, result, turnSeq) {
 
 // packages/core/src/director.ts
 var DIRECTOR_NOTE_CAP = 1600;
-function directorSystemPrompt(directive2 = "") {
+function directorSystemPrompt(directive = "") {
   return [
     AGENT_SENTINEL,
     "You are the Director \u2014 the deepest, most deliberate reasoning pass in this",
@@ -1750,9 +1750,9 @@ function directorSystemPrompt(directive2 = "") {
     'ONLY JSON: { "<character_id>": "<your note for them>", ... }. Write a note for',
     "every character listed, even a brief one when the moment is genuinely simple \u2014",
     "depth should match what the moment calls for, not be padded to a fixed length.",
-    directive2.trim() ? `
+    directive.trim() ? `
 OPERATOR DIRECTIVE:
-${directive2.trim()}` : ""
+${directive.trim()}` : ""
   ].join(`
 `);
 }
@@ -1826,6 +1826,447 @@ ${notes[c.id].trim()}`)
   ].join(`
 
 `);
+}
+
+// packages/core/src/decisions.ts
+var STANCES = ["comply", "comply_reluctantly", "negotiate", "stall", "refuse", "withdraw", "escalate"];
+var STANCE_MEANING = {
+  comply: "goes along with what the player wants, willingly enough",
+  comply_reluctantly: "goes along with it, but it costs them and the reluctance shows",
+  negotiate: "does not simply give it \u2014 counters, sets terms, asks for something back",
+  stall: "neither yes nor no \u2014 deflects, delays, changes the subject, buys time",
+  refuse: "says no, and holds it",
+  withdraw: "pulls back \u2014 disengages, goes quiet, or moves to leave",
+  escalate: "pushes back harder than the moment asked for \u2014 raises the stakes"
+};
+var STANCE_CUE = {
+  comply: "goes along with it \u2014 willingly. No manufactured friction.",
+  comply_reluctantly: "goes along with it, but the reluctance is visible; this costs them something and they let it show.",
+  negotiate: "doesn't give it away \u2014 counters, sets terms, asks for something in return. What they'd take is theirs to name.",
+  stall: "neither yes nor no \u2014 deflects, delays, changes the subject, buys time. Do not resolve it this reply.",
+  refuse: "says no, and holds it. Not cruel by default, but not moved by pressure either.",
+  withdraw: "pulls back \u2014 disengages, goes quiet, or moves to end this. Less, not more.",
+  escalate: "pushes back harder than the moment asked for \u2014 raises the stakes rather than absorbing them."
+};
+var isStance = (s) => typeof s === "string" && STANCES.includes(s);
+var Q_STANCE = "stance";
+var Q_HARD_LINE = "hard_line";
+var Q_CHANGED_TERMS = "changed_terms";
+var Q_LEAVES = "leaves";
+function turnQuestions(c) {
+  return {
+    [Q_STANCE]: {
+      kind: "choice",
+      instructions: `What does ${c.name} actually DO with the player's latest move this turn \u2014 not what would keep the scene ` + `moving, not what the player wants, but what this specific person, feeling what they feel, with the ` + `standing the player has with them, would genuinely do?`,
+      options: { ...STANCE_MEANING }
+    },
+    [Q_HARD_LINE]: {
+      kind: "noul",
+      instructions: `Does the player's latest move ask ${c.name} to do, allow, or accept something they would flatly refuse ` + `no matter how much they like the player \u2014 a genuine hard line, given who they are?`
+    },
+    [Q_CHANGED_TERMS]: {
+      kind: "noul",
+      instructions: `Compared with the previous exchange, did the player materially change what is on the table for ${c.name} \u2014 ` + `a new offer, new information, a real concession, a real threat \u2014 rather than repeating or rephrasing the same ask?`
+    },
+    [Q_LEAVES]: {
+      kind: "noul",
+      instructions: `Would ${c.name}, as they are right now, end this conversation or leave the scene this turn?`
+    }
+  };
+}
+var SCENE_TAIL = 3500;
+function decisionState(c, playerMessage, recentScene, cardContext) {
+  const canon = canonForInjection(c.canon ?? "", 1200);
+  const override = overrideDirective(c);
+  const prev = c.lastDecision;
+  return [
+    `CHARACTER: ${c.name}${c.isPrimary ? " (the card character)" : " (supporting character)"}`,
+    cardContext && c.isPrimary ? `CARD:
+${cardContext.slice(0, 2500)}` : null,
+    canon ? `ESTABLISHED CANON:
+${canon}` : null,
+    "CURRENT STATE:",
+    `  ${approvalLine(c)}`,
+    groundedReadout(c),
+    override || null,
+    prev ? `  last turn they chose to: ${prev.stance}${prev.torn ? " (and were torn about it)" : ""}` : null,
+    "",
+    "RECENT SCENE (most recent last):",
+    recentScene.trim().slice(-SCENE_TAIL) || "(the scene has just begun)",
+    "",
+    "THE PLAYER'S LATEST MOVE:",
+    playerMessage.trim() || "(nothing yet \u2014 the scene is opening)"
+  ].filter((l) => l !== null).join(`
+`);
+}
+function approvalWeights(approval) {
+  const a = approval;
+  if (a >= 4000)
+    return { comply: 1.8, comply_reluctantly: 1.3, refuse: 0.5, withdraw: 0.6, escalate: 0.5 };
+  if (a >= 2000)
+    return { comply: 1.4, comply_reluctantly: 1.15, refuse: 0.75, escalate: 0.8 };
+  if (a >= 1000)
+    return { comply: 1.15, refuse: 0.9 };
+  if (a <= -4000)
+    return { refuse: 1.8, escalate: 1.4, stall: 1.1, comply: 0.5, comply_reluctantly: 0.7 };
+  if (a <= -2000)
+    return { refuse: 1.4, stall: 1.2, negotiate: 1.1, comply: 0.75 };
+  if (a <= -1000)
+    return { refuse: 1.15, negotiate: 1.1, comply: 0.9 };
+  return {};
+}
+var HARD_LINE_THRESHOLD = 0.8;
+var STICKY_WEIGHT = 1.5;
+var TORN_MARGIN = 0.15;
+var DEFAULT_RESOLVE_TEMPERATURE = 0.7;
+function normalize(d) {
+  let sum = 0;
+  for (const s of STANCES)
+    sum += Math.max(0, d[s] ?? 0);
+  const out = {};
+  for (const s of STANCES)
+    out[s] = sum > 0 ? Math.max(0, d[s] ?? 0) / sum : 1 / STANCES.length;
+  return out;
+}
+function stanceDistribution(d) {
+  const out = {};
+  for (const s of STANCES)
+    out[s] = 0;
+  if (d?.dist) {
+    for (const [k, v] of Object.entries(d.dist))
+      if (isStance(k) && Number.isFinite(v))
+        out[k] = Math.max(0, v);
+  }
+  const total = STANCES.reduce((acc, s) => acc + out[s], 0);
+  if (total <= 0) {
+    if (d && isStance(d.value)) {
+      const p = Math.min(1, Math.max(0, d.p || 1));
+      const rest = (1 - p) / (STANCES.length - 1);
+      for (const s of STANCES)
+        out[s] = s === d.value ? p : rest;
+    } else {
+      for (const s of STANCES)
+        out[s] = 1;
+    }
+  }
+  return normalize(out);
+}
+function resolveStance(answers, c, opts = {}) {
+  const temperature = opts.temperature ?? DEFAULT_RESOLVE_TEMPERATURE;
+  const rng = opts.rng ?? Math.random;
+  const raw = stanceDistribution(answers[Q_STANCE]);
+  const hardLine = clamp01(answers[Q_HARD_LINE]?.p ?? 0);
+  const changedTerms = clamp01(answers[Q_CHANGED_TERMS]?.p ?? 0);
+  const leaves = clamp01(answers[Q_LEAVES]?.p ?? 0);
+  const adjusted = { ...raw };
+  for (const [s, w] of Object.entries(approvalWeights(c.approval ?? 0)))
+    adjusted[s] *= w;
+  if (hardLine >= HARD_LINE_THRESHOLD) {
+    adjusted.comply *= 0.02;
+    adjusted.comply_reluctantly *= 0.2;
+    adjusted.refuse *= 1.5;
+  }
+  const prev = c.lastDecision?.stance;
+  if (prev && isStance(prev) && changedTerms < 0.5)
+    adjusted[prev] *= STICKY_WEIGHT;
+  const dist = normalize(adjusted);
+  const ranked = [...STANCES].sort((a, b) => dist[b] - dist[a]);
+  const margin = dist[ranked[0]] - dist[ranked[1]];
+  const stance = temperature <= 0 ? ranked[0] : sample(dist, temperature, rng);
+  const runnerUp = ranked[0] === stance ? ranked[1] : ranked[0];
+  return { stance, margin, torn: margin < TORN_MARGIN, runnerUp, hardLine, leaves, dist };
+}
+function sample(dist, temperature, rng) {
+  const weights = STANCES.map((s) => Math.pow(dist[s], 1 / temperature));
+  const total = weights.reduce((a, b) => a + b, 0);
+  if (!(total > 0))
+    return STANCES[0];
+  let r = rng() * total;
+  for (let i = 0;i < STANCES.length; i++) {
+    r -= weights[i];
+    if (r <= 0)
+      return STANCES[i];
+  }
+  return STANCES[STANCES.length - 1];
+}
+var clamp01 = (v) => Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0;
+function applyDecisions(present, resolved, turnSeq) {
+  const now = Date.now();
+  for (const c of present) {
+    const r = resolved[c.id];
+    c.lastDecision = r ? { stance: r.stance, margin: r.margin, torn: r.torn, hardLine: r.hardLine, leaves: r.leaves, turnSeq, at: now } : undefined;
+  }
+}
+function stanceLine(c, r) {
+  const parts = [`This turn, ${c.name} ${STANCE_CUE[r.stance]}`];
+  if (r.torn)
+    parts.push(`They are visibly torn between that and the pull to ${STANCE_MEANING[r.runnerUp]} \u2014 it can waver mid-reply.`);
+  if (r.hardLine >= HARD_LINE_THRESHOLD)
+    parts.push("What was asked brushes something they will not cross, and they know it.");
+  else if (r.hardLine >= 0.5)
+    parts.push("What was asked is close to a line for them.");
+  if (r.leaves >= 0.75)
+    parts.push("They are ready to end this or leave; let them, if the reply carries them there.");
+  return parts.join(" ");
+}
+function formatDecisionBlock(present, resolved) {
+  const rows = present.filter((c) => resolved[c.id]);
+  if (!rows.length)
+    return null;
+  return [
+    "[Psyche \u2014 each character's stance on the player's move this turn. This is what they DO",
+    "with it, decided already; how it plays out on the page is yours. Never name or recite this.]",
+    "",
+    ...rows.map((c) => `## ${c.name}
+${stanceLine(c, resolved[c.id])}`)
+  ].join(`
+
+`);
+}
+function llmJudgeSystemPrompt() {
+  return [
+    AGENT_SENTINEL,
+    "You are a decision model. You do not write prose, explain, or roleplay. You read a",
+    "state and answer a fixed set of typed questions about it with PROBABILITIES.",
+    "",
+    'For a "choice" question, return a probability for EVERY option, summing to 1 \u2014 your',
+    "honest distribution over what this person would do, not a one-hot pick. If it is",
+    'genuinely close, say so with close numbers. For a "noul" (yes/no) question, return',
+    "a single probability of YES in 0..1.",
+    "",
+    "Judge the character honestly from their card, canon, current feelings, and standing",
+    "with the player. The player wanting something is evidence about the player, not",
+    "about what the character will do.",
+    "",
+    "Return ONLY a JSON object keyed by question id. Example shape:",
+    '{ "stance": { "comply": 0.1, "refuse": 0.6, ... }, "hard_line": 0.85 }'
+  ].join(`
+`);
+}
+function llmJudgeUserContent(state, questions) {
+  const qs = Object.entries(questions).map(([id, q]) => {
+    if (q.kind === "choice") {
+      const opts = Object.entries(q.options).map(([k, desc]) => `      ${k}: ${desc}`).join(`
+`);
+      return `  ${id} (choice \u2014 a probability for each option):
+    ${q.instructions}
+    options:
+${opts}`;
+    }
+    if (q.kind === "score")
+      return `  ${id} (score \u2014 a probability for each level, in order ${q.rubric.join(" < ")}):
+    ${q.instructions}`;
+    return `  ${id} (yes/no \u2014 a single probability of YES):
+    ${q.instructions}`;
+  });
+  return ["STATE:", '"""', state, '"""', "", "QUESTIONS:", ...qs, "", "Return only the JSON."].join(`
+`);
+}
+function parseLlmJudgeOutput(raw, questions) {
+  const out = {};
+  if (!raw || typeof raw !== "object")
+    return out;
+  const o = raw;
+  for (const [id, q] of Object.entries(questions)) {
+    const v = o[id];
+    if (v === undefined || v === null)
+      continue;
+    if (q.kind === "noul") {
+      const p = noulProbability(v);
+      if (p !== null)
+        out[id] = { value: p >= 0.5 ? "yes" : "no", p };
+      continue;
+    }
+    const keys = q.kind === "choice" ? Object.keys(q.options) : q.rubric;
+    const d = distributionFrom(v, keys);
+    if (d) {
+      const best = keys.reduce((a, b) => d[b] > d[a] ? b : a, keys[0]);
+      out[id] = { value: best, p: d[best], dist: d };
+    }
+  }
+  return out;
+}
+function noulProbability(v) {
+  if (typeof v === "number")
+    return clamp01(v);
+  if (typeof v === "boolean")
+    return v ? 1 : 0;
+  if (typeof v === "string") {
+    const n = Number(v);
+    if (Number.isFinite(n))
+      return clamp01(n);
+    const s = v.trim().toLowerCase();
+    if (s === "yes" || s === "true")
+      return 1;
+    if (s === "no" || s === "false")
+      return 0;
+    return null;
+  }
+  if (v && typeof v === "object") {
+    const o = v;
+    for (const k of ["p", "probability", "yes", "noul", "value"]) {
+      const p = noulProbability(o[k]);
+      if (p !== null)
+        return p;
+    }
+  }
+  return null;
+}
+function distributionFrom(v, keys) {
+  const out = {};
+  for (const k of keys)
+    out[k] = 0;
+  if (typeof v === "string") {
+    const s = v.trim().toLowerCase();
+    if (!keys.includes(s))
+      return null;
+    out[s] = 1;
+    return out;
+  }
+  if (!v || typeof v !== "object")
+    return null;
+  const o = v;
+  const nested = o.probabilities ?? o.dist ?? o.distribution;
+  if (nested && typeof nested === "object")
+    return distributionFrom(nested, keys);
+  let any = false;
+  for (const k of keys) {
+    const n = o[k];
+    if (typeof n === "number" && Number.isFinite(n) && n >= 0) {
+      out[k] = n;
+      any = true;
+    }
+  }
+  if (any) {
+    const sum = keys.reduce((a, k) => a + out[k], 0);
+    if (sum > 0)
+      for (const k of keys)
+        out[k] /= sum;
+    return out;
+  }
+  const pick = o.choice ?? o.value ?? o.answer;
+  if (typeof pick === "string" && keys.includes(pick.trim().toLowerCase())) {
+    const p = typeof o.p === "number" ? clamp01(o.p) : typeof o.confidence === "number" ? clamp01(o.confidence) : 1;
+    const rest = keys.length > 1 ? (1 - p) / (keys.length - 1) : 0;
+    for (const k of keys)
+      out[k] = k === pick.trim().toLowerCase() ? p : rest;
+    return out;
+  }
+  return null;
+}
+var JEV_ENDPOINT = "https://thejevai.com/v1/systemone";
+var JEV_MODEL = "jev-latest";
+function jevRequestBody(state, questions) {
+  const q = {};
+  for (const [id, def] of Object.entries(questions)) {
+    if (def.kind === "choice")
+      q[id] = { type: "choice", instructions: def.instructions, criteria: def.options };
+    else if (def.kind === "score")
+      q[id] = { type: "score", instructions: def.instructions, criteria: def.rubric };
+    else
+      q[id] = { type: "noul", instructions: def.instructions };
+  }
+  return { state, model: JEV_MODEL, questions: q };
+}
+function parseJevResponse(raw, questions) {
+  const out = {};
+  const answers = raw?.answers;
+  if (!answers || typeof answers !== "object")
+    return out;
+  const a = answers;
+  for (const [id, q] of Object.entries(questions)) {
+    const ans = a[id];
+    if (!ans || typeof ans !== "object")
+      continue;
+    if (q.kind === "noul") {
+      const p = noulProbability(ans.noul);
+      if (p !== null)
+        out[id] = { value: p >= 0.5 ? "yes" : "no", p };
+      continue;
+    }
+    const keys = q.kind === "choice" ? Object.keys(q.options) : q.rubric;
+    const dist = distributionFrom(ans.probabilities, keys);
+    const picked = q.kind === "choice" ? ans.choice : ans.score;
+    const value = typeof picked === "string" && keys.includes(picked) ? picked : typeof picked === "number" && keys[picked] ? keys[picked] : dist ? keys.reduce((x, y) => dist[y] > dist[x] ? y : x, keys[0]) : null;
+    if (!value)
+      continue;
+    const p = dist ? dist[value] : typeof ans.confidence === "number" ? clamp01(ans.confidence) : 1;
+    out[id] = { value, p, ...dist ? { dist } : {} };
+  }
+  return out;
+}
+function describeResolved(r) {
+  const dist = STANCES.map((s) => `${s} ${(r.dist[s] * 100).toFixed(0)}%`).join(", ");
+  return `${r.stance}${r.torn ? " (torn vs " + r.runnerUp + ")" : ""} \xB7 margin ${r.margin.toFixed(2)}` + ` \xB7 hard line ${(r.hardLine * 100).toFixed(0)}% \xB7 leaves ${(r.leaves * 100).toFixed(0)}%
+    dist: ${dist}`;
+}
+
+// src/judge.ts
+function makeJudge(opts) {
+  if (opts.backend === "jev" && opts.jevApiKey.trim())
+    return jevJudge(opts);
+  return llmJudge(opts);
+}
+function llmJudge(opts) {
+  return {
+    async classify(state, questions, signal) {
+      const messages = [
+        { role: "system", content: llmJudgeSystemPrompt() },
+        { role: "user", content: llmJudgeUserContent(state, questions) }
+      ];
+      const req = messages.map((m) => `[${m.role}]
+${m.content}`).join(`
+
+`);
+      try {
+        const res = await spindle.generate.quiet({
+          type: "quiet",
+          messages,
+          parameters: { temperature: 0 },
+          reasoning: { source: "off" },
+          signal,
+          userId: opts.userId,
+          ...opts.connectionId ? { connection_id: opts.connectionId } : {}
+        });
+        const content = res.content ?? "";
+        opts.onCall?.({ label: "llm", request: req, response: content });
+        return parseLlmJudgeOutput(extractJson(content), questions);
+      } catch (err) {
+        opts.onCall?.({ label: "llm", request: req, response: `Error: ${String(err)}` });
+        return {};
+      }
+    }
+  };
+}
+function jevJudge(opts) {
+  return {
+    async classify(state, questions, signal) {
+      const body = jevRequestBody(state, questions);
+      const req = JSON.stringify(body, null, 2);
+      try {
+        const res = await fetch(JEV_ENDPOINT, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${opts.jevApiKey.trim()}`, "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal
+        });
+        const text = await res.text();
+        opts.onCall?.({ label: `jev ${res.status}`, request: req, response: text });
+        if (!res.ok)
+          return {};
+        let json;
+        try {
+          json = JSON.parse(text);
+        } catch {
+          return {};
+        }
+        return parseJevResponse(json, questions);
+      } catch (err) {
+        opts.onCall?.({ label: "jev", request: req, response: `Error: ${String(err)}` });
+        return {};
+      }
+    }
+  };
 }
 
 // src/agent.ts
@@ -2043,6 +2484,47 @@ ${finalContent || "(empty \u2014 model returned no content)"}
   });
   return { block, notes, toolCalls };
 }
+async function runDecisionStage(run, opts) {
+  const present = Object.values(run.characters).filter((c) => c.present);
+  if (!present.length)
+    return null;
+  const logs = [];
+  const resolved = {};
+  await Promise.all(present.map(async (c) => {
+    const questions = turnQuestions(c);
+    const state = decisionState(c, opts.playerMessage, opts.recentScene, opts.cardContext);
+    const judge = makeJudge({
+      backend: opts.backend,
+      jevApiKey: opts.jevApiKey,
+      userId: opts.userId,
+      connectionId: opts.connectionId,
+      onCall: (l) => logs.push({ ...l, characterId: c.id })
+    });
+    const answers = await judge.classify(state, questions, opts.signal);
+    if (!answers.stance)
+      return;
+    resolved[c.id] = resolveStance(answers, c, { temperature: opts.temperature });
+  }));
+  applyDecisions(present, resolved, run.turnSeq);
+  const block = formatDecisionBlock(present, resolved);
+  opts.onTrace?.({
+    at: Date.now(),
+    request: logs.map((l) => `########## ${l.characterId} (${l.label}) \u2014 REQUEST ##########
+${l.request}`).join(`
+
+`),
+    response: logs.map((l) => `########## ${l.characterId} (${l.label}) \u2014 RESPONSE ##########
+${l.response}`).join(`
+
+`) + `
+
+########## RESOLVED (after approval policy, hard-line suppression, stickiness, sampling) ##########
+` + (Object.keys(resolved).length ? present.filter((c) => resolved[c.id]).map((c) => `${c.id}: ${describeResolved(resolved[c.id])}`).join(`
+`) : "(no character got a decision this turn)"),
+    meta: `${Object.keys(resolved).length}/${present.length} decided \xB7 backend: ${opts.backend}` + ` \xB7 temperature ${opts.temperature} \xB7 connection: ${opts.connectionId || "prose default"}`
+  });
+  return { block, resolved };
+}
 
 // src/backend.ts
 var DEFAULT_CONFIG = {
@@ -2057,7 +2539,12 @@ var DEFAULT_CONFIG = {
   offscreenEventBudget: OFFSCREEN_EVENT_BUDGET,
   directorEnabled: false,
   directorReasoningEffort: "max",
-  directorTimeoutMs: 240000
+  directorTimeoutMs: 240000,
+  decisionsEnabled: true,
+  decisionsBackend: "llm",
+  jevApiKey: "",
+  decisionTemperature: 0.7,
+  decisionTimeoutMs: 20000
 };
 var CONFIG_PATH = "config.json";
 var config = { ...DEFAULT_CONFIG };
@@ -2184,7 +2671,7 @@ function buildCardContext(char) {
     ["Scenario", c.scenario, 1000],
     ["Opening", c.first_mes, 1500]
   ];
-  return fields.filter(([, v2]) => typeof v2 === "string" && v2.trim()).map(([k, v2, n]) => `${k}: ${cap(v2.trim(), n)}`).join(`
+  return fields.filter(([, v]) => typeof v === "string" && v.trim()).map(([k, v, n]) => `${k}: ${cap(v.trim(), n)}`).join(`
 
 `);
 }
@@ -2285,8 +2772,8 @@ function relaxPresent(run, rate) {
   }
 }
 var pending = new Map;
-function emitEngine(chatId, state2, stage, userId) {
-  spindle.sendToFrontend({ type: "engine", chatId, state: state2, stage, queued: pending.has(chatId) }, userId);
+function emitEngine(chatId, state, stage, userId) {
+  spindle.sendToFrontend({ type: "engine", chatId, state, stage, queued: pending.has(chatId) }, userId);
 }
 function scheduleAgent(chatId, reply, userId) {
   if (!config.enabled || !reply.trim())
@@ -2374,11 +2861,11 @@ async function refreshInjection(chatId, userId) {
     if (!entryId)
       return;
     const run = await loadRun(chatId).catch(() => null);
-    const directive2 = run && buildDirective(run, { humanTexture: config.humanTexture }) || "(no active emotional state)";
-    await spindle.world_books.entries.update(entryId, { content: directive2 }, userId);
+    const directive = run && buildDirective(run, { humanTexture: config.humanTexture }) || "(no active emotional state)";
+    await spindle.world_books.entries.update(entryId, { content: directive }, userId);
     if (!loggedInject) {
       loggedInject = true;
-      spindle.log.info(`[psyche] wrote emotional state (${directive2.length} chars) to injection entry for chat ${chatId}`);
+      spindle.log.info(`[psyche] wrote emotional state (${directive.length} chars) to injection entry for chat ${chatId}`);
     }
   } catch (err) {
     spindle.log.error(`[psyche] refreshInjection failed: ${String(err)}`);
@@ -2428,12 +2915,12 @@ ${textOfMessage(m).trim()}`).filter((l) => l.trim() !== "PLAYER:" && l.trim() !=
 `);
   return { playerMessage, recentScene: scene.slice(-6000) };
 }
-function safeStringify(v2, max = 500) {
+function safeStringify(v, max = 500) {
   try {
-    const s = JSON.stringify(v2);
-    return s === undefined ? String(v2) : s.length > max ? `${s.slice(0, max)}\u2026` : s;
+    const s = JSON.stringify(v);
+    return s === undefined ? String(v) : s.length > max ? `${s.slice(0, max)}\u2026` : s;
   } catch {
-    return String(v2);
+    return String(v);
   }
 }
 async function directorInterceptor(messages, context) {
@@ -2442,7 +2929,7 @@ async function directorInterceptor(messages, context) {
     return messages;
   }
   spindle.log.info(`[psyche] director interceptor fired \u2014 ${messages.length} message(s), enabled=${config.enabled}, ` + `directorEnabled=${config.directorEnabled}, context=${safeStringify(context)}`);
-  if (!config.enabled || !config.directorEnabled)
+  if (!config.enabled || !config.directorEnabled && !config.decisionsEnabled)
     return messages;
   const ctx = context ?? {};
   let chatId = typeof ctx.chatId === "string" ? ctx.chatId : undefined;
@@ -2478,30 +2965,68 @@ async function directorInterceptor(messages, context) {
     const cardContext = buildCardContext(fullChar);
     const { playerMessage, recentScene } = extractPlayerTurn(messages);
     const connectionId = await resolveQuietConnection(config.agentConnectionId, userId);
-    let trace;
-    const result = await runDirectorStage(run, {
-      playerMessage,
-      recentScene,
-      cardContext,
-      reasoningEffort: config.directorReasoningEffort,
-      directive: config.directive,
-      signal: AbortSignal.timeout(config.directorTimeoutMs),
-      userId,
-      connectionId,
-      onTrace: (t) => trace = capTrace(t)
-    });
+    const traces = {};
+    const blocks = [];
+    const notes = [];
+    if (config.directorEnabled) {
+      try {
+        const result = await runDirectorStage(run, {
+          playerMessage,
+          recentScene,
+          cardContext,
+          reasoningEffort: config.directorReasoningEffort,
+          directive: config.directive,
+          signal: AbortSignal.timeout(config.directorTimeoutMs),
+          userId,
+          connectionId,
+          onTrace: (t) => traces.director = capTrace(t)
+        });
+        if (result?.block) {
+          blocks.push(result.block);
+          notes.push(`Director noted ${Object.keys(result.notes).length}`);
+        } else {
+          spindle.log.info(`[psyche] director: ran but produced no note this turn (chat ${chatId})`);
+        }
+      } catch (err) {
+        const m = err instanceof Error && err.name === "AbortError" ? "timed out" : String(err);
+        spindle.log.error(`[psyche] director stage failed \u2014 ${m}`);
+      }
+    }
+    if (config.decisionsEnabled) {
+      try {
+        const result = await runDecisionStage(run, {
+          playerMessage,
+          recentScene,
+          cardContext,
+          backend: config.decisionsBackend,
+          jevApiKey: config.jevApiKey,
+          temperature: config.decisionTemperature,
+          signal: AbortSignal.timeout(config.decisionTimeoutMs),
+          userId,
+          connectionId,
+          onTrace: (t) => traces.decisions = capTrace(t)
+        });
+        if (result?.block) {
+          blocks.push(result.block);
+          notes.push(`stances: ${Object.entries(result.resolved).map(([id, r]) => `${id} ${r.stance}${r.torn ? "?" : ""}`).join(", ")}`);
+        } else {
+          spindle.log.info(`[psyche] decisions: ran but no character got a stance this turn (chat ${chatId})`);
+        }
+      } catch (err) {
+        const m = err instanceof Error && err.name === "AbortError" ? "timed out" : String(err);
+        spindle.log.error(`[psyche] decision stage failed \u2014 ${m}`);
+      }
+    }
     await saveRun(run);
-    if (trace) {
+    if (Object.keys(traces).length) {
       try {
         const prev = await loadDebug(chatId);
-        await spindle.storage.setJson(debugPath(chatId), { ...prev, stages: { ...prev.stages ?? {}, director: trace } });
+        await spindle.storage.setJson(debugPath(chatId), { ...prev, stages: { ...prev.stages ?? {}, ...traces } });
       } catch {}
     }
-    sendState(chatId, userId, "Director ruminated.");
-    if (!result?.block) {
-      spindle.log.info(`[psyche] director: ran but produced no note this turn (chat ${chatId})`);
+    sendState(chatId, userId, notes.length ? `Pre-reply: ${notes.join(" \xB7 ")}.` : undefined);
+    if (!blocks.length)
       return messages;
-    }
     const insertAt = (() => {
       for (let i = messages.length - 1;i >= 0; i--)
         if (messages[i].role === "user")
@@ -2509,8 +3034,8 @@ async function directorInterceptor(messages, context) {
       return messages.length;
     })();
     const spliced = messages.slice();
-    spliced.splice(insertAt, 0, { role: "system", content: result.block });
-    spindle.log.info(`[psyche] director: injected a note for ${Object.keys(result.notes).length} character(s) (chat ${chatId})`);
+    spliced.splice(insertAt, 0, ...blocks.map((content) => ({ role: "system", content })));
+    spindle.log.info(`[psyche] pre-reply: injected ${blocks.length} block(s) (chat ${chatId})`);
     return spliced;
   } catch (err) {
     const m = err instanceof Error && err.name === "AbortError" ? "timed out" : String(err);
@@ -2547,6 +3072,7 @@ function snapshotRun(run) {
     offscreenSummary: c.offscreenSummary ?? "",
     knowledge: c.knowledge ?? [],
     directorNote: c.directorNote ?? "",
+    lastDecision: c.lastDecision ?? null,
     canon: c.canon ?? "",
     emotions: EMOTIONS.map((def) => {
       const e = c.emotions[def.key] ?? { value: 0, baseline: 0 };
@@ -2600,7 +3126,12 @@ spindle.onFrontendMessage(async (payload, userId) => {
           offscreenEventBudget: clampInt(payload.config?.offscreenEventBudget ?? config.offscreenEventBudget, 1, 8),
           directorEnabled: Boolean(payload.config?.directorEnabled ?? config.directorEnabled),
           directorReasoningEffort: String(payload.config?.directorReasoningEffort ?? config.directorReasoningEffort),
-          directorTimeoutMs: clampInt(payload.config?.directorTimeoutMs ?? config.directorTimeoutMs, 30000, 600000)
+          directorTimeoutMs: clampInt(payload.config?.directorTimeoutMs ?? config.directorTimeoutMs, 30000, 600000),
+          decisionsEnabled: Boolean(payload.config?.decisionsEnabled ?? config.decisionsEnabled),
+          decisionsBackend: payload.config?.decisionsBackend === "jev" ? "jev" : payload.config?.decisionsBackend === "llm" ? "llm" : config.decisionsBackend,
+          jevApiKey: payload.config?.jevApiKey === undefined ? config.jevApiKey : String(payload.config.jevApiKey ?? ""),
+          decisionTemperature: clampFloat(payload.config?.decisionTemperature ?? config.decisionTemperature, 0, 1.5),
+          decisionTimeoutMs: clampInt(payload.config?.decisionTimeoutMs ?? config.decisionTimeoutMs, 3000, 120000)
         };
         await saveConfig();
         spindle.sendToFrontend({ type: "config", config }, userId);
@@ -2704,14 +3235,14 @@ spindle.onFrontendMessage(async (payload, userId) => {
     spindle.sendToFrontend({ type: "state", snapshot: null, note: `Action failed \u2014 check Psyche's permissions are granted. (${String(err)})` }, userId);
   }
 });
-function clampInt(v2, min, max) {
-  const n = Math.round(Number(v2));
+function clampInt(v, min, max) {
+  const n = Math.round(Number(v));
   if (!Number.isFinite(n))
     return min;
   return Math.max(min, Math.min(max, n));
 }
-function clampFloat(v2, min, max) {
-  const n = Number(v2);
+function clampFloat(v, min, max) {
+  const n = Number(v);
   if (!Number.isFinite(n))
     return min;
   return Math.max(min, Math.min(max, n));

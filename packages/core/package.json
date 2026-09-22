@@ -13,6 +13,7 @@
     "./prompts": "./src/prompts.ts",
     "./rubrics": "./src/rubrics.ts",
     "./offscreen": "./src/offscreen.ts",
-    "./director": "./src/director.ts"
+    "./director": "./src/director.ts",
+    "./decisions": "./src/decisions.ts"
   }
 }

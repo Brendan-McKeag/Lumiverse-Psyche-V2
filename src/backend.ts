@@ -15,7 +15,8 @@ import {
   APPROVAL_MIN,
   APPROVAL_MAX,
 } from './run'
-import { runPsycheAgent, runOffscreenStage, runDirectorStage, AGENT_SENTINEL, StageTrace } from './agent'
+import { runPsycheAgent, runOffscreenStage, runDirectorStage, runDecisionStage, AGENT_SENTINEL, StageTrace } from './agent'
+import type { JudgeBackend } from './judge'
 import { EMOTIONS, EMOTION_BY_KEY, describeValue, relaxToward } from '@psyche/core/affect'
 import { OFFSCREEN_EVENT_BUDGET } from '@psyche/core/offscreen'
 
@@ -55,6 +56,22 @@ interface Config {
   /** reasoning effort for the Director's call — "ruminate as long as needed" */
   directorReasoningEffort: string
   directorTimeoutMs: number
+  /**
+   * The decision layer: right before each reply, one cheap typed-judgment
+   * call per present character settles what they DO with the player's move
+   * (comply / negotiate / stall / refuse / …) and how sure they are, with
+   * approval policy, hard-line suppression, stickiness and sampling applied
+   * in code. Runs from the same pre-generation interceptor as the Director
+   * and fails open the same way. Toggle off to get exactly the old behavior.
+   */
+  decisionsEnabled: boolean
+  /** 'llm' = the user's own connection asked for probabilities; 'jev' = the Jev AI decision-model API */
+  decisionsBackend: JudgeBackend
+  /** Jev AI API key — only used when decisionsBackend is 'jev'. Stored in this extension's config.json. */
+  jevApiKey: string
+  /** stance sampling temperature: 0 = always the most likely stance, 1 = draw straight from the distribution */
+  decisionTemperature: number
+  decisionTimeoutMs: number
 }
 
 const DEFAULT_CONFIG: Config = {
@@ -70,6 +87,11 @@ const DEFAULT_CONFIG: Config = {
   directorEnabled: false,
   directorReasoningEffort: 'max',
   directorTimeoutMs: 240000,
+  decisionsEnabled: true,
+  decisionsBackend: 'llm',
+  jevApiKey: '',
+  decisionTemperature: 0.7,
+  decisionTimeoutMs: 20000,
 }
 const CONFIG_PATH = 'config.json'
 
@@ -535,7 +557,7 @@ async function directorInterceptor(messages: LlmMessage[], context: unknown): Pr
     `[psyche] director interceptor fired — ${messages.length} message(s), enabled=${config.enabled}, ` +
       `directorEnabled=${config.directorEnabled}, context=${safeStringify(context)}`,
   )
-  if (!config.enabled || !config.directorEnabled) return messages
+  if (!config.enabled || (!config.directorEnabled && !config.decisionsEnabled)) return messages
 
   // `context`'s real shape isn't in the type declarations; the sibling
   // world-info interceptor's context carries chatId/characterId/userId, so
@@ -583,41 +605,85 @@ async function directorInterceptor(messages: LlmMessage[], context: unknown): Pr
     const { playerMessage, recentScene } = extractPlayerTurn(messages)
     const connectionId = await resolveQuietConnection(config.agentConnectionId, userId)
 
-    let trace: StageTrace | undefined
-    const result = await runDirectorStage(run, {
-      playerMessage,
-      recentScene,
-      cardContext,
-      reasoningEffort: config.directorReasoningEffort,
-      directive: config.directive,
-      signal: AbortSignal.timeout(config.directorTimeoutMs),
-      userId,
-      connectionId,
-      onTrace: (t) => (trace = capTrace(t)),
-    })
+    const traces: Record<string, StageTrace> = {}
+    const blocks: string[] = []
+    const notes: string[] = []
 
-    await saveRun(run) // persist even if no block resulted — update_canon/note_knowledge may still have fired
-    if (trace) {
+    // ── the Director (heavy, optional) ─────────────────────────────────
+    if (config.directorEnabled) {
+      try {
+        const result = await runDirectorStage(run, {
+          playerMessage,
+          recentScene,
+          cardContext,
+          reasoningEffort: config.directorReasoningEffort,
+          directive: config.directive,
+          signal: AbortSignal.timeout(config.directorTimeoutMs),
+          userId,
+          connectionId,
+          onTrace: (t) => (traces.director = capTrace(t)),
+        })
+        if (result?.block) {
+          blocks.push(result.block)
+          notes.push(`Director noted ${Object.keys(result.notes).length}`)
+        } else {
+          spindle.log.info(`[psyche] director: ran but produced no note this turn (chat ${chatId})`)
+        }
+      } catch (err) {
+        const m = err instanceof Error && err.name === 'AbortError' ? 'timed out' : String(err)
+        spindle.log.error(`[psyche] director stage failed — ${m}`)
+      }
+    }
+
+    // ── the decision layer (cheap, on by default) ──────────────────────
+    // Runs AFTER the Director so its state string can include anything the
+    // Director just recorded to canon, and its block is spliced last — the
+    // most specific instruction sits closest to the player's message.
+    if (config.decisionsEnabled) {
+      try {
+        const result = await runDecisionStage(run, {
+          playerMessage,
+          recentScene,
+          cardContext,
+          backend: config.decisionsBackend,
+          jevApiKey: config.jevApiKey,
+          temperature: config.decisionTemperature,
+          signal: AbortSignal.timeout(config.decisionTimeoutMs),
+          userId,
+          connectionId,
+          onTrace: (t) => (traces.decisions = capTrace(t)),
+        })
+        if (result?.block) {
+          blocks.push(result.block)
+          notes.push(`stances: ${Object.entries(result.resolved).map(([id, r]) => `${id} ${r.stance}${r.torn ? '?' : ''}`).join(', ')}`)
+        } else {
+          spindle.log.info(`[psyche] decisions: ran but no character got a stance this turn (chat ${chatId})`)
+        }
+      } catch (err) {
+        const m = err instanceof Error && err.name === 'AbortError' ? 'timed out' : String(err)
+        spindle.log.error(`[psyche] decision stage failed — ${m}`)
+      }
+    }
+
+    await saveRun(run) // persist even with no block — canon/knowledge/lastDecision may have changed
+    if (Object.keys(traces).length) {
       try {
         const prev = await loadDebug(chatId)
-        await spindle.storage.setJson(debugPath(chatId), { ...prev, stages: { ...(prev.stages ?? {}), director: trace } })
+        await spindle.storage.setJson(debugPath(chatId), { ...prev, stages: { ...(prev.stages ?? {}), ...traces } })
       } catch {
         /* debug trace is best-effort */
       }
     }
-    void sendState(chatId, userId, 'Director ruminated.') // fire-and-forget; must not delay this generation
+    void sendState(chatId, userId, notes.length ? `Pre-reply: ${notes.join(' · ')}.` : undefined) // fire-and-forget; must not delay this generation
 
-    if (!result?.block) {
-      spindle.log.info(`[psyche] director: ran but produced no note this turn (chat ${chatId})`)
-      return messages
-    }
+    if (!blocks.length) return messages
     const insertAt = (() => {
       for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === 'user') return i
       return messages.length
     })()
     const spliced = messages.slice()
-    spliced.splice(insertAt, 0, { role: 'system', content: result.block })
-    spindle.log.info(`[psyche] director: injected a note for ${Object.keys(result.notes).length} character(s) (chat ${chatId})`)
+    spliced.splice(insertAt, 0, ...blocks.map((content) => ({ role: 'system' as const, content })))
+    spindle.log.info(`[psyche] pre-reply: injected ${blocks.length} block(s) (chat ${chatId})`)
     return spliced
   } catch (err) {
     const m = err instanceof Error && err.name === 'AbortError' ? 'timed out' : String(err)
@@ -658,6 +724,7 @@ function snapshotRun(run: RunState) {
     offscreenSummary: c.offscreenSummary ?? '',
     knowledge: c.knowledge ?? [],
     directorNote: c.directorNote ?? '',
+    lastDecision: c.lastDecision ?? null,
     canon: c.canon ?? '',
     emotions: EMOTIONS.map((def) => {
       const e = c.emotions[def.key] ?? { value: 0, baseline: 0 }
@@ -719,6 +786,11 @@ spindle.onFrontendMessage(async (payload: any, userId) => {
         directorEnabled: Boolean(payload.config?.directorEnabled ?? config.directorEnabled),
         directorReasoningEffort: String(payload.config?.directorReasoningEffort ?? config.directorReasoningEffort),
         directorTimeoutMs: clampInt(payload.config?.directorTimeoutMs ?? config.directorTimeoutMs, 30000, 600000),
+        decisionsEnabled: Boolean(payload.config?.decisionsEnabled ?? config.decisionsEnabled),
+        decisionsBackend: payload.config?.decisionsBackend === 'jev' ? 'jev' : payload.config?.decisionsBackend === 'llm' ? 'llm' : config.decisionsBackend,
+        jevApiKey: payload.config?.jevApiKey === undefined ? config.jevApiKey : String(payload.config.jevApiKey ?? ''),
+        decisionTemperature: clampFloat(payload.config?.decisionTemperature ?? config.decisionTemperature, 0, 1.5),
+        decisionTimeoutMs: clampInt(payload.config?.decisionTimeoutMs ?? config.decisionTimeoutMs, 3000, 120000),
       }
       await saveConfig()
       spindle.sendToFrontend({ type: 'config', config }, userId)

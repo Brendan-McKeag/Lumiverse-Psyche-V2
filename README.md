@@ -77,14 +77,38 @@ top of.
   timeout behavior is undocumented, so it fails open (falls back to the
   unmodified prompt on any error or timeout) and defaults **off**.
 
+- **The decision layer.** Right before each reply — from the same
+  pre-generation interceptor as the Director, but cheap enough to be **on by
+  default** — one small *typed* judgment call per present character answers
+  a fixed set of bounded questions with probabilities rather than prose:
+  what do they actually **do** with the player's move (comply / comply
+  reluctantly / negotiate / stall / refuse / withdraw / escalate), does it
+  brush a hard line, did the player materially change the terms, would they
+  leave. The judgment comes from the model; the *move* is made in code:
+  approval band biases the distribution (devoted characters lean toward
+  yes, hostile ones toward no — enforced numerically, not by exhortation),
+  a flagged hard line takes compliance off the table regardless of
+  approval, last turn's stance is sticky unless the terms changed, and the
+  final stance is **sampled** rather than argmaxed so a character can
+  surprise you in proportion to how open the question really was. A narrow
+  top-two margin is rendered as visible hesitation — the model's uncertainty
+  becomes the character's. The result is one line per character spliced
+  into that generation's prompt ("This turn, Mara says no, and holds it…"),
+  then discarded. Two judges behind one interface: the engine model asked
+  for probabilities as JSON (default, no new dependency, self-reported
+  confidence), or the [Jev AI](https://thejevai.com) decision-model API
+  (calibrated probabilities, sub-second, but sends scene text to a third
+  party — opt-in, keyed in settings). Every failure path is "no stance this
+  turn"; toggling it off restores the previous behavior exactly.
+
 ## Architecture
 
 A Bun workspace with two parts:
 
 | part | role |
 |------|------|
-| `packages/core` (`@psyche/core`) | pure logic, no host API, no network: the 40-emotion schema + saturation math (`affect.ts`), run-state types (`state.ts`), the approval ledger (`approval.ts`), the per-emotion behavioral rubrics (`rubrics.ts`), the live state→behavior directive renderer (`directive.ts`), the agent tool schemas + executors (`tools.ts`), the mind-update stage prompt (`prompts.ts`), the off-stage simulation stage (`offscreen.ts`), and the Director (`director.ts`). |
-| `src/` (the plugin) | Lumiverse wiring: generation hooks, storage, the world-info injection interceptor, the Director's pre-generation prompt interceptor, and the frontend drawer. `runAgentForChat` in `backend.ts` runs two fail-soft post-hoc stages per turn — mind-update, then off-stage simulation — each with its own debug trace and settings toggle; the Director runs separately, pre-generation, registered via `spindle.registerInterceptor`. |
+| `packages/core` (`@psyche/core`) | pure logic, no host API, no network: the 40-emotion schema + saturation math (`affect.ts`), run-state types (`state.ts`), the approval ledger (`approval.ts`), the per-emotion behavioral rubrics (`rubrics.ts`), the live state→behavior directive renderer (`directive.ts`), the agent tool schemas + executors (`tools.ts`), the mind-update stage prompt (`prompts.ts`), the off-stage simulation stage (`offscreen.ts`), the Director (`director.ts`), and the decision layer — question sets, approval policy, stance resolution, and both judges' pure parsing (`decisions.ts`). |
+| `src/` (the plugin) | Lumiverse wiring: generation hooks, storage, the world-info injection interceptor, the pre-generation prompt interceptor shared by the Director and the decision layer, the two judge transports (`judge.ts`: engine-model JSON or the Jev AI HTTP API), and the frontend drawer. `runAgentForChat` in `backend.ts` runs two fail-soft post-hoc stages per turn — mind-update, then off-stage simulation — each with its own debug trace and settings toggle; the Director runs separately, pre-generation, registered via `spindle.registerInterceptor`. |
 
 Plugin state is keyed by `chatId` under the extension's scoped storage
 (`runs/<chatId>.json`).
@@ -104,11 +128,14 @@ rebuild before publishing.
 
 In the **Psyche** drawer tab: enable/disable, human texture (energy-matched
 replies), off-stage simulation (on/off + event budget), the Director
-(on/off, reasoning effort, timeout — experimental, off by default), engine
+(on/off, reasoning effort, timeout — experimental, off by default), the
+decision layer (on/off, judge backend, Jev API key, stance temperature,
+timeout), engine
 rounds per turn, decay rate, an optional engine directive (tone steering,
 shared by mind update/off-stage sim/the Director), reset run, per-character
 presence toggle, direct editing of every emotion value + approval, and a
 per-character canon editor (read/write — the engine grows it, you can seed
 or correct it too). The debug tab shows the raw request/response for each
-turn's mind update, off-stage simulation, the Director, and the injected
-directive.
+turn's mind update, off-stage simulation, the decision layer (every judge
+call plus the resolved distribution after policy), the Director, and the
+injected directive.

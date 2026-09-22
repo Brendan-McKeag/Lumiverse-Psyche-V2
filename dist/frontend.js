@@ -30,6 +30,7 @@ function setup(ctx) {
     .ps-engine { font-size:12px; font-weight:600; padding:6px 10px; border-radius:var(--lumiverse-radius); border:1px solid var(--lumiverse-border); text-align:center; }
     .ps-engine.run { color:#e0a23c; border-color:#e0a23c; background:rgba(224,162,60,0.10); }
     .ps-engine.idle { color:#4fbf67; border-color:#4fbf67; background:rgba(79,191,103,0.07); }
+    .ps-decision-note { font-size:12px; line-height:1.45; padding:8px 10px; border-left:2px solid #6c8cff; background:var(--lumiverse-fill-subtle); border-radius:var(--lumiverse-radius); }
     .ps-director-note { font-size:12px; line-height:1.45; padding:8px 10px; border-left:2px solid #e0a23c; background:var(--lumiverse-fill-subtle); border-radius:var(--lumiverse-radius); white-space:pre-wrap; }
     .ps-experimental { font-size:11px; line-height:1.4; padding:6px 8px; border-left:2px solid #e5534b; background:var(--lumiverse-fill-subtle); border-radius:var(--lumiverse-radius); }
     .ps-pre { white-space:pre-wrap; word-break:break-word; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:10.5px; line-height:1.4; max-height:360px; overflow:auto; padding:8px; background:var(--lumiverse-fill-subtle); border:1px solid var(--lumiverse-border); border-radius:var(--lumiverse-radius); }
@@ -58,6 +59,7 @@ function setup(ctx) {
           <label class="ps-row ps-muted"><input type="checkbox" class="ps-present" /> present</label>
         </div>
 
+        <div class="ps-decision-note" style="display:none"></div>
         <div class="ps-director-note" style="display:none"></div>
 
         <h4 class="ps-h">Approval <span class="ps-muted">— their opinion of you (−10000…+10000, never decays)</span></h4>
@@ -102,6 +104,25 @@ function setup(ctx) {
       </div>
 
       <div class="ps-section">
+        <h4 class="ps-h">Decisions <span class="ps-muted">— what each character does with your move, settled before the reply</span></h4>
+        <div class="ps-muted">Right before each reply, one small typed-judgment call per present character answers: comply, comply
+        reluctantly, negotiate, stall, refuse, withdraw, or escalate — with probabilities. Approval, hard lines, and last turn's
+        stance are applied in code, then the stance is sampled and injected as one line. Fails open: any error just means the
+        reply goes out without it. Turn off to restore the previous behavior exactly.</div>
+        <label class="ps-row"><input type="checkbox" class="ps-dec-en" /> Enable the decision layer</label>
+        <div><span class="ps-muted">Judge</span>
+          <select class="ps-input ps-dec-backend">
+            <option value="llm">Engine model, asked for probabilities (no new dependency; confidence is self-reported)</option>
+            <option value="jev">Jev AI decision model (calibrated probabilities; sends scene text to thejevai.com)</option>
+          </select>
+        </div>
+        <div><span class="ps-muted">Jev AI API key (only used with the Jev judge)</span><input type="password" class="ps-input ps-jev-key" autocomplete="off" placeholder="jev-…" /></div>
+        <div><span class="ps-muted">Stance temperature (0 = always the likeliest stance; 0.7 = human; 1 = straight from the distribution)</span><input type="number" class="ps-input ps-dec-temp" min="0" max="1.5" step="0.05" /></div>
+        <div><span class="ps-muted">Timeout (ms) — the reply goes out without a stance if exceeded</span><input type="number" class="ps-input ps-dec-timeout" min="3000" max="120000" step="1000" /></div>
+        <div class="ps-row"><button class="ps-btn ps-dec-save">Save settings</button></div>
+      </div>
+
+      <div class="ps-section">
         <h4 class="ps-h">Director <span class="ps-muted">— experimental</span></h4>
         <div class="ps-experimental">Runs right before each reply, seeing the player's actual incoming message, and
         can inject its own reasoning directly into that generation's prompt. This uses a host hook whose timeout
@@ -127,6 +148,7 @@ function setup(ctx) {
         <div class="ps-row">
           <button class="ps-btn ps-dbg" data-k="update">Mind update</button>
           <button class="ps-btn ps-dbg" data-k="offscreen">Off-stage sim</button>
+          <button class="ps-btn ps-dbg" data-k="decisions">Decisions</button>
           <button class="ps-btn ps-dbg" data-k="director">Director</button>
           <button class="ps-btn ps-dbg" data-k="injection">→ Injected directive</button>
           <button class="ps-btn ps-dbg-refresh" title="Re-fetch latest">↻</button>
@@ -148,6 +170,12 @@ function setup(ctx) {
   const apprValEl = q(".ps-appr-val");
   const apprBandEl = q(".ps-appr-band");
   const directorNoteEl = q(".ps-director-note");
+  const decisionNoteEl = q(".ps-decision-note");
+  const decEnEl = q(".ps-dec-en");
+  const decBackendEl = q(".ps-dec-backend");
+  const jevKeyEl = q(".ps-jev-key");
+  const decTempEl = q(".ps-dec-temp");
+  const decTimeoutEl = q(".ps-dec-timeout");
   const canonEl = q(".ps-canon");
   const offSummaryEl = q(".ps-off-summary");
   const offHEl = q(".ps-off-h");
@@ -209,6 +237,14 @@ function setup(ctx) {
     detail.style.display = "flex";
     dName.textContent = `${c.name}${c.isPrimary ? " (primary)" : ""}`;
     presentEl.checked = c.present;
+    const d = c.lastDecision;
+    if (d?.stance) {
+      const pct = (x) => `${Math.round(x * 100)}%`;
+      decisionNoteEl.textContent = `Last stance: ${d.stance.replace("_", " ")}${d.torn ? " (torn)" : ""} · margin ${d.margin.toFixed(2)}` + ` · hard line ${pct(d.hardLine)} · leaves ${pct(d.leaves)}`;
+      decisionNoteEl.style.display = "block";
+    } else {
+      decisionNoteEl.style.display = "none";
+    }
     if (c.directorNote?.trim()) {
       directorNoteEl.textContent = `Director: ${c.directorNote}`;
       directorNoteEl.style.display = "block";
@@ -375,12 +411,18 @@ ${t.response}`;
         offscreenEventBudget: Number(offBudgetEl.value),
         directorEnabled: directorEnEl.checked,
         directorReasoningEffort: directorEffortEl.value,
-        directorTimeoutMs: Number(directorTimeoutEl.value)
+        directorTimeoutMs: Number(directorTimeoutEl.value),
+        decisionsEnabled: decEnEl.checked,
+        decisionsBackend: decBackendEl.value,
+        jevApiKey: jevKeyEl.value,
+        decisionTemperature: Number(decTempEl.value),
+        decisionTimeoutMs: Number(decTimeoutEl.value)
       }
     });
   }
   q(".ps-save-cfg").addEventListener("click", saveAllConfig);
   q(".ps-director-save").addEventListener("click", saveAllConfig);
+  q(".ps-dec-save").addEventListener("click", saveAllConfig);
   const unsub = ctx.onBackendMessage((raw) => {
     const p = raw;
     switch (p?.type) {
@@ -422,6 +464,11 @@ ${t.response}`;
         directorEnEl.checked = c.directorEnabled === true;
         directorEffortEl.value = c.directorReasoningEffort ?? "max";
         directorTimeoutEl.value = String(c.directorTimeoutMs ?? 240000);
+        decEnEl.checked = c.decisionsEnabled !== false;
+        decBackendEl.value = c.decisionsBackend === "jev" ? "jev" : "llm";
+        jevKeyEl.value = c.jevApiKey ?? "";
+        decTempEl.value = String(c.decisionTemperature ?? 0.7);
+        decTimeoutEl.value = String(c.decisionTimeoutMs ?? 20000);
         roundsEl.value = String(c.maxRounds ?? 8);
         decayEl.value = String(c.decayRate ?? 0.12);
         dirEl.value = c.directive ?? "";

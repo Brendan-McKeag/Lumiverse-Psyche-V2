@@ -24,6 +24,16 @@ import {
   applyDirectorNotes,
   formatDirectorBlock,
 } from '@psyche/core/director'
+import {
+  turnQuestions,
+  decisionState,
+  resolveStance,
+  applyDecisions,
+  formatDecisionBlock,
+  describeResolved,
+  type ResolvedDecision,
+} from '@psyche/core/decisions'
+import { makeJudge, type JudgeBackend, type JudgeCallLog } from './judge'
 
 /* ------------------------------------------------------------------ *
  * Psyche (core fork) — the mind engine (plugin transport)
@@ -367,6 +377,81 @@ export async function runDirectorStage(
   })
 
   return { block, notes, toolCalls }
+}
+
+/* ---------------------------- the decision stage ------------------------ *
+ * Also pre-generation, also from the interceptor, but cheap: one typed
+ * judgment call per present character (in parallel), answered with
+ * probabilities, resolved into a stance by code (approval policy, hard-line
+ * suppression, stickiness, sampling), and rendered as one line each. Runs
+ * whether or not the heavy Director is on. Every failure is "no stance this
+ * turn", never a lost reply.
+ * ------------------------------------------------------------------ */
+
+export interface DecisionStageResult {
+  block: string | null
+  resolved: Record<string, ResolvedDecision>
+}
+
+export async function runDecisionStage(
+  run: RunState,
+  opts: {
+    playerMessage: string
+    recentScene: string
+    cardContext: string
+    backend: JudgeBackend
+    jevApiKey: string
+    temperature: number
+    signal?: AbortSignal
+    userId?: string
+    connectionId?: string
+    onTrace?: TraceFn
+  },
+): Promise<DecisionStageResult | null> {
+  const present = Object.values(run.characters).filter((c) => c.present)
+  if (!present.length) return null
+
+  const logs: (JudgeCallLog & { characterId: string })[] = []
+  const resolved: Record<string, ResolvedDecision> = {}
+  await Promise.all(
+    present.map(async (c) => {
+      const questions = turnQuestions(c)
+      const state = decisionState(c, opts.playerMessage, opts.recentScene, opts.cardContext)
+      const judge = makeJudge({
+        backend: opts.backend,
+        jevApiKey: opts.jevApiKey,
+        userId: opts.userId,
+        connectionId: opts.connectionId,
+        onCall: (l) => logs.push({ ...l, characterId: c.id }),
+      })
+      const answers = await judge.classify(state, questions, opts.signal)
+      // No stance answer at all means the judge failed or returned garbage —
+      // leave this character undecided rather than sampling from uniform.
+      if (!answers.stance) return
+      resolved[c.id] = resolveStance(answers, c, { temperature: opts.temperature })
+    }),
+  )
+  applyDecisions(present, resolved, run.turnSeq)
+  const block = formatDecisionBlock(present, resolved)
+
+  opts.onTrace?.({
+    at: Date.now(),
+    request: logs.map((l) => `########## ${l.characterId} (${l.label}) — REQUEST ##########\n${l.request}`).join('\n\n'),
+    response:
+      logs.map((l) => `########## ${l.characterId} (${l.label}) — RESPONSE ##########\n${l.response}`).join('\n\n') +
+      `\n\n########## RESOLVED (after approval policy, hard-line suppression, stickiness, sampling) ##########\n` +
+      (Object.keys(resolved).length
+        ? present
+            .filter((c) => resolved[c.id])
+            .map((c) => `${c.id}: ${describeResolved(resolved[c.id])}`)
+            .join('\n')
+        : '(no character got a decision this turn)'),
+    meta:
+      `${Object.keys(resolved).length}/${present.length} decided · backend: ${opts.backend}` +
+      ` · temperature ${opts.temperature} · connection: ${opts.connectionId || 'prose default'}`,
+  })
+
+  return { block, resolved }
 }
 
 export { AGENT_SENTINEL }
