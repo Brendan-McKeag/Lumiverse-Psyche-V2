@@ -47,7 +47,25 @@ export interface TacticOption {
 export const INTENSITY_WORD: Record<Intensity, string> = { 1: 'lightly', 2: 'firmly', 3: 'all in' }
 
 export const MAX_GENERATED = 5
-const TEXT_CAP = 140
+/** Generous on purpose: a safety ceiling against runaway output, not a style
+ *  limit. Anything over it is trimmed at a clause boundary, never mid-thought. */
+export const TACTIC_TEXT_CAP = 320
+
+/** Trim to `cap` at the last sentence/clause boundary (or word, failing that),
+ *  marking the cut with an ellipsis. Text under the cap is returned whole. */
+export function clipOption(text: string, cap = TACTIC_TEXT_CAP): string {
+  const t = text.trim().replace(/\s+/g, ' ')
+  if (t.length <= cap) return t
+  const head = t.slice(0, cap)
+  const floor = Math.floor(cap * 0.5)
+  let cut = -1
+  for (const re of [/[.!?]["”']?\s/g, /[;:—–]\s?|,\s/g]) {
+    for (const m of head.matchAll(re)) if (m.index! >= floor) cut = m.index! + (m[0].trimEnd().length)
+    if (cut > 0) break
+  }
+  if (cut < 0) cut = head.lastIndexOf(' ') > floor ? head.lastIndexOf(' ') : cap
+  return `${t.slice(0, cut).replace(/[\s,;:—–]+$/, '')}…`
+}
 
 /* ----------------------------- anchors ------------------------------ */
 /* Generic moves that are always on the table, so the judge has a sensible
@@ -134,7 +152,7 @@ export function parseGeneratedTactics(raw: unknown): { text: string; kind: Tacti
   const out: { text: string; kind: TacticKind; intensity: Intensity }[] = []
   for (const item of list) {
     const it = (typeof item === 'string' ? { text: item } : item) as { text?: unknown; kind?: unknown; intensity?: unknown }
-    const text = typeof it?.text === 'string' ? it.text.trim().replace(/\s+/g, ' ').slice(0, TEXT_CAP) : ''
+    const text = typeof it?.text === 'string' ? clipOption(it.text) : ''
     if (!text) continue
     const kind: TacticKind = isKind(it.kind) && it.kind !== 'other' ? it.kind : 'verbal'
     const n = typeof it.intensity === 'number' ? Math.round(it.intensity) : Number(it.intensity)

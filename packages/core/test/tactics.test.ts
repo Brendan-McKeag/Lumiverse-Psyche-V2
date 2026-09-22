@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import {
   parseGeneratedTactics,
+  clipOption,
+  TACTIC_TEXT_CAP,
   similar,
   intensityCap,
   physicalAllowed,
@@ -51,6 +53,23 @@ describe('parseGeneratedTactics', () => {
     expect(many).toHaveLength(MAX_GENERATED)
     expect(parseGeneratedTactics(['walks out', 'slams the door'])).toHaveLength(2)
     expect(parseGeneratedTactics(null)).toEqual([])
+  })
+  test('keeps a long, vivid option whole instead of chopping it mid-sentence', () => {
+    const vivid =
+      'Whispers, "I\'m out of my mind," more to herself than to you, but stays exactly where you can see her, ' +
+      'her throat bobbing with a hard swallow as she waits to see what you do with it'
+    expect(vivid.length).toBeLessThan(TACTIC_TEXT_CAP)
+    expect(parseGeneratedTactics({ options: [{ text: vivid, kind: 'verbal', intensity: 1 }] })[0].text).toBe(vivid)
+  })
+  test('text over the ceiling is trimmed at a clause boundary with an ellipsis, never mid-word', () => {
+    const long = Array.from({ length: 30 }, (_, i) => `clause number ${i}`).join(', ')
+    const clipped = clipOption(long, 120)
+    expect(clipped.length).toBeLessThanOrEqual(121)
+    expect(clipped.endsWith('…')).toBe(true)
+    expect(clipped).toMatch(/clause number \d+…$/)
+    expect(clipOption('short and sweet')).toBe('short and sweet')
+    const oneWord = 'x'.repeat(200)
+    expect(clipOption(oneWord, 50)).toHaveLength(51)
   })
   test('similar() catches rewordings but not different ideas', () => {
     expect(similar('calls it out directly', 'calls it out directly now')).toBe(true)

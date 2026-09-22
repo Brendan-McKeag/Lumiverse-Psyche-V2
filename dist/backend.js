@@ -2269,7 +2269,25 @@ var TACTIC_KINDS = ["verbal", "action", "physical", "leverage", "social", "withd
 var isKind = (s) => typeof s === "string" && TACTIC_KINDS.includes(s);
 var INTENSITY_WORD = { 1: "lightly", 2: "firmly", 3: "all in" };
 var MAX_GENERATED = 5;
-var TEXT_CAP = 140;
+var TACTIC_TEXT_CAP = 320;
+function clipOption(text, cap = TACTIC_TEXT_CAP) {
+  const t = text.trim().replace(/\s+/g, " ");
+  if (t.length <= cap)
+    return t;
+  const head = t.slice(0, cap);
+  const floor = Math.floor(cap * 0.5);
+  let cut = -1;
+  for (const re of [/[.!?]["\u201D']?\s/g, /[;:\u2014\u2013]\s?|,\s/g]) {
+    for (const m of head.matchAll(re))
+      if (m.index >= floor)
+        cut = m.index + m[0].trimEnd().length;
+    if (cut > 0)
+      break;
+  }
+  if (cut < 0)
+    cut = head.lastIndexOf(" ") > floor ? head.lastIndexOf(" ") : cap;
+  return `${t.slice(0, cut).replace(/[\s,;:\u2014\u2013]+$/, "")}\u2026`;
+}
 var A = (text, kind, intensity) => ({ text, kind, intensity });
 var TACTIC_ANCHORS = {
   comply: [A("goes along with it simply, no fuss", "verbal", 1), A("goes along and adds something of their own", "action", 2)],
@@ -2347,7 +2365,7 @@ function parseGeneratedTactics(raw) {
   const out = [];
   for (const item of list) {
     const it = typeof item === "string" ? { text: item } : item;
-    const text = typeof it?.text === "string" ? it.text.trim().replace(/\s+/g, " ").slice(0, TEXT_CAP) : "";
+    const text = typeof it?.text === "string" ? clipOption(it.text) : "";
     if (!text)
       continue;
     const kind = isKind(it.kind) && it.kind !== "other" ? it.kind : "verbal";
