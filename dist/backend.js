@@ -2902,7 +2902,7 @@ async function runDecisionStage(run, opts) {
     if (!opts.tacticsEnabled)
       return;
     try {
-      const tacticSignal = anySignal(opts.signal, AbortSignal.timeout(opts.tacticTimeoutMs));
+      const tacticSignal = opts.tacticTimeoutMs > 0 ? anySignal(opts.signal, AbortSignal.timeout(opts.tacticTimeoutMs)) : opts.signal;
       const onCall = (l) => logs.push({ ...l, characterId: c.id });
       const generated = await generateTacticOptions(state, c, r.stance, {
         directive: opts.directive,
@@ -3127,7 +3127,7 @@ async function runAgentForChat(chatId, reply, userId) {
       result = await runPsycheAgent(run, transcript, cardContext, {
         maxRounds: config.maxRounds,
         directive: config.directive,
-        signal: AbortSignal.timeout(config.agentTimeoutMs),
+        signal: timeoutSignal(config.agentTimeoutMs),
         userId,
         connectionId: agentConn,
         onTrace: (t) => dbg.stages.update = capTrace(t)
@@ -3144,7 +3144,7 @@ async function runAgentForChat(chatId, reply, userId) {
         const off = await runOffscreenStage(run, {
           eventBudget: config.offscreenEventBudget,
           directive: config.directive,
-          signal: AbortSignal.timeout(config.agentTimeoutMs),
+          signal: timeoutSignal(config.agentTimeoutMs),
           userId,
           connectionId: agentConn,
           onTrace: (t) => dbg.stages.offscreen = capTrace(t)
@@ -3406,7 +3406,7 @@ async function directorInterceptor(messages, context) {
           cardContext,
           reasoningEffort: config.directorReasoningEffort,
           directive: config.directive,
-          signal: AbortSignal.timeout(config.directorTimeoutMs),
+          signal: timeoutSignal(config.directorTimeoutMs),
           userId,
           connectionId,
           onTrace: (t) => traces.director = capTrace(t)
@@ -3437,7 +3437,7 @@ async function directorInterceptor(messages, context) {
           tacticsEnabled: config.tacticsEnabled,
           tacticTimeoutMs: config.tacticTimeoutMs,
           directive: config.directive,
-          signal: AbortSignal.timeout(config.decisionTimeoutMs),
+          signal: timeoutSignal(config.decisionTimeoutMs),
           userId,
           connectionId,
           onTrace: (t) => traces.decisions = capTrace(t)
@@ -3555,14 +3555,14 @@ spindle.onFrontendMessage(async (payload, userId) => {
           maxRounds: clampInt(payload.config?.maxRounds ?? config.maxRounds, 1, 20),
           decayRate: clampFloat(payload.config?.decayRate ?? config.decayRate, 0, 1),
           directive: String(payload.config?.directive ?? config.directive),
-          agentTimeoutMs: clampInt(payload.config?.agentTimeoutMs ?? config.agentTimeoutMs, 1e4, 300000),
+          agentTimeoutMs: clampTimeout(payload.config?.agentTimeoutMs ?? config.agentTimeoutMs, 1e4, 1800000),
           agentConnectionId: payload.config?.agentConnectionId === undefined ? config.agentConnectionId : String(payload.config.agentConnectionId ?? ""),
           humanTexture: Boolean(payload.config?.humanTexture ?? config.humanTexture),
           offscreenEnabled: Boolean(payload.config?.offscreenEnabled ?? config.offscreenEnabled),
           offscreenEventBudget: clampInt(payload.config?.offscreenEventBudget ?? config.offscreenEventBudget, 1, 8),
           directorEnabled: Boolean(payload.config?.directorEnabled ?? config.directorEnabled),
           directorReasoningEffort: String(payload.config?.directorReasoningEffort ?? config.directorReasoningEffort),
-          directorTimeoutMs: clampInt(payload.config?.directorTimeoutMs ?? config.directorTimeoutMs, 30000, 600000),
+          directorTimeoutMs: clampTimeout(payload.config?.directorTimeoutMs ?? config.directorTimeoutMs, 30000, 1800000),
           decisionsEnabled: Boolean(payload.config?.decisionsEnabled ?? config.decisionsEnabled),
           decisionsBackend: payload.config?.decisionsBackend === "jev" ? "jev" : payload.config?.decisionsBackend === "llm" ? "llm" : config.decisionsBackend,
           jevProvider: isDecisionProvider(payload.config?.jevProvider) ? payload.config.jevProvider : config.jevProvider,
@@ -3570,9 +3570,9 @@ spindle.onFrontendMessage(async (payload, userId) => {
           jevModel: payload.config?.jevModel === undefined ? config.jevModel : String(payload.config.jevModel ?? "").trim(),
           jevApiKey: payload.config?.jevApiKey === undefined ? config.jevApiKey : String(payload.config.jevApiKey ?? ""),
           decisionTemperature: clampFloat(payload.config?.decisionTemperature ?? config.decisionTemperature, 0, 1.5),
-          decisionTimeoutMs: clampInt(payload.config?.decisionTimeoutMs ?? config.decisionTimeoutMs, 3000, 120000),
+          decisionTimeoutMs: clampTimeout(payload.config?.decisionTimeoutMs ?? config.decisionTimeoutMs, 3000, 1800000),
           tacticsEnabled: Boolean(payload.config?.tacticsEnabled ?? config.tacticsEnabled),
-          tacticTimeoutMs: clampInt(payload.config?.tacticTimeoutMs ?? config.tacticTimeoutMs, 3000, 120000)
+          tacticTimeoutMs: clampTimeout(payload.config?.tacticTimeoutMs ?? config.tacticTimeoutMs, 3000, 1800000)
         };
         await saveConfig();
         spindle.sendToFrontend({ type: "config", config }, userId);
@@ -3676,6 +3676,15 @@ spindle.onFrontendMessage(async (payload, userId) => {
     spindle.sendToFrontend({ type: "state", snapshot: null, note: `Action failed \u2014 check Psyche's permissions are granted. (${String(err)})` }, userId);
   }
 });
+function timeoutSignal(ms) {
+  return ms > 0 ? AbortSignal.timeout(ms) : undefined;
+}
+function clampTimeout(v, min, max) {
+  const n = Math.round(Number(v));
+  if (!Number.isFinite(n) || n <= 0)
+    return 0;
+  return Math.max(min, Math.min(max, n));
+}
 function clampInt(v, min, max) {
   const n = Math.round(Number(v));
   if (!Number.isFinite(n))

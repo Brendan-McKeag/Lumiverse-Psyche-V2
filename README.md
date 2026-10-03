@@ -141,13 +141,21 @@ bun run build   # emits dist/backend.js and dist/frontend.js
 The extension loads `dist/` (per `spindle.json`), **not** `src/` — always
 rebuild before publishing.
 
+**Timeouts.** Every stage budget (engine, Director, decisions, tactics)
+accepts **0 = no timeout**, for slow local or reasoning models whose calls
+legitimately run for many minutes; otherwise values are clamped to their
+range, up to 30 minutes. The post-reply stages are genuinely unbounded at 0.
+The two pre-generation stages run inside the host's prompt interceptor, whose
+own timeout is undocumented — at 0, Psyche stops being what gives up, but the
+host may still cut the hook off and send the prompt without Psyche's block.
+
 ## Settings
 
 In the **Psyche** drawer tab: enable/disable, human texture (energy-matched
 replies), off-stage simulation (on/off + event budget), the Director
 (on/off, reasoning effort, timeout — experimental, off by default), the
 decision layer (on/off, judge backend, provider + API key, stance
-temperature, timeout, tactics on/off + timeout), engine
+temperature, timeout, tactics on/off + timeout), engine timeout, engine
 rounds per turn, decay rate, an optional engine directive (tone steering,
 shared by mind update/off-stage sim/the Director), reset run, per-character
 presence toggle, direct editing of every emotion value + approval, and a

@@ -37,6 +37,7 @@ interface Config {
   /** fraction of the pressure gap a present feeling relaxes toward baseline each turn */
   decayRate: number
   directive: string
+  /** per-stage budget for the post-reply engine calls; 0 = no timeout */
   agentTimeoutMs: number
   /** connection id the out-of-band engine calls use; '' = same as the prose model */
   agentConnectionId: string
@@ -56,6 +57,7 @@ interface Config {
   directorEnabled: boolean
   /** reasoning effort for the Director's call — "ruminate as long as needed" */
   directorReasoningEffort: string
+  /** 0 = no timeout: wait as long as the Director takes (see timeoutSignal) */
   directorTimeoutMs: number
   /**
    * The decision layer: right before each reply, one cheap typed-judgment
@@ -78,6 +80,7 @@ interface Config {
   jevApiKey: string
   /** stance sampling temperature: 0 = always the most likely stance, 1 = draw straight from the distribution */
   decisionTemperature: number
+  /** 0 = no timeout */
   decisionTimeoutMs: number
   /**
    * Tactic layer (needs the decision layer): once the stance is chosen, the
@@ -87,6 +90,7 @@ interface Config {
    * reply. Off = stance only, exactly as before.
    */
   tacticsEnabled: boolean
+  /** 0 = no timeout */
   tacticTimeoutMs: number
 }
 
@@ -280,7 +284,7 @@ async function runAgentForChat(chatId: string, reply: string, userId?: string) {
       result = await runPsycheAgent(run, transcript, cardContext, {
         maxRounds: config.maxRounds,
         directive: config.directive,
-        signal: AbortSignal.timeout(config.agentTimeoutMs),
+        signal: timeoutSignal(config.agentTimeoutMs),
         userId,
         connectionId: agentConn,
         onTrace: (t) => (dbg.stages!.update = capTrace(t)),
@@ -301,7 +305,7 @@ async function runAgentForChat(chatId: string, reply: string, userId?: string) {
         const off = await runOffscreenStage(run, {
           eventBudget: config.offscreenEventBudget,
           directive: config.directive,
-          signal: AbortSignal.timeout(config.agentTimeoutMs),
+          signal: timeoutSignal(config.agentTimeoutMs),
           userId,
           connectionId: agentConn,
           onTrace: (t) => (dbg.stages!.offscreen = capTrace(t)),
@@ -639,7 +643,7 @@ async function directorInterceptor(messages: LlmMessage[], context: unknown): Pr
           cardContext,
           reasoningEffort: config.directorReasoningEffort,
           directive: config.directive,
-          signal: AbortSignal.timeout(config.directorTimeoutMs),
+          signal: timeoutSignal(config.directorTimeoutMs),
           userId,
           connectionId,
           onTrace: (t) => (traces.director = capTrace(t)),
@@ -675,7 +679,7 @@ async function directorInterceptor(messages: LlmMessage[], context: unknown): Pr
           tacticsEnabled: config.tacticsEnabled,
           tacticTimeoutMs: config.tacticTimeoutMs,
           directive: config.directive,
-          signal: AbortSignal.timeout(config.decisionTimeoutMs),
+          signal: timeoutSignal(config.decisionTimeoutMs),
           userId,
           connectionId,
           onTrace: (t) => (traces.decisions = capTrace(t)),
@@ -806,7 +810,7 @@ spindle.onFrontendMessage(async (payload: any, userId) => {
         maxRounds: clampInt(payload.config?.maxRounds ?? config.maxRounds, 1, 20),
         decayRate: clampFloat(payload.config?.decayRate ?? config.decayRate, 0, 1),
         directive: String(payload.config?.directive ?? config.directive),
-        agentTimeoutMs: clampInt(payload.config?.agentTimeoutMs ?? config.agentTimeoutMs, 10000, 300000),
+        agentTimeoutMs: clampTimeout(payload.config?.agentTimeoutMs ?? config.agentTimeoutMs, 10000, 1800000),
         agentConnectionId:
           payload.config?.agentConnectionId === undefined
             ? config.agentConnectionId
@@ -816,7 +820,7 @@ spindle.onFrontendMessage(async (payload: any, userId) => {
         offscreenEventBudget: clampInt(payload.config?.offscreenEventBudget ?? config.offscreenEventBudget, 1, 8),
         directorEnabled: Boolean(payload.config?.directorEnabled ?? config.directorEnabled),
         directorReasoningEffort: String(payload.config?.directorReasoningEffort ?? config.directorReasoningEffort),
-        directorTimeoutMs: clampInt(payload.config?.directorTimeoutMs ?? config.directorTimeoutMs, 30000, 600000),
+        directorTimeoutMs: clampTimeout(payload.config?.directorTimeoutMs ?? config.directorTimeoutMs, 30000, 1800000),
         decisionsEnabled: Boolean(payload.config?.decisionsEnabled ?? config.decisionsEnabled),
         decisionsBackend: payload.config?.decisionsBackend === 'jev' ? 'jev' : payload.config?.decisionsBackend === 'llm' ? 'llm' : config.decisionsBackend,
         jevProvider: isDecisionProvider(payload.config?.jevProvider) ? payload.config.jevProvider : config.jevProvider,
@@ -824,9 +828,9 @@ spindle.onFrontendMessage(async (payload: any, userId) => {
         jevModel: payload.config?.jevModel === undefined ? config.jevModel : String(payload.config.jevModel ?? '').trim(),
         jevApiKey: payload.config?.jevApiKey === undefined ? config.jevApiKey : String(payload.config.jevApiKey ?? ''),
         decisionTemperature: clampFloat(payload.config?.decisionTemperature ?? config.decisionTemperature, 0, 1.5),
-        decisionTimeoutMs: clampInt(payload.config?.decisionTimeoutMs ?? config.decisionTimeoutMs, 3000, 120000),
+        decisionTimeoutMs: clampTimeout(payload.config?.decisionTimeoutMs ?? config.decisionTimeoutMs, 3000, 1800000),
         tacticsEnabled: Boolean(payload.config?.tacticsEnabled ?? config.tacticsEnabled),
-        tacticTimeoutMs: clampInt(payload.config?.tacticTimeoutMs ?? config.tacticTimeoutMs, 3000, 120000),
+        tacticTimeoutMs: clampTimeout(payload.config?.tacticTimeoutMs ?? config.tacticTimeoutMs, 3000, 1800000),
       }
       await saveConfig()
       spindle.sendToFrontend({ type: 'config', config }, userId)
@@ -936,6 +940,29 @@ spindle.onFrontendMessage(async (payload: any, userId) => {
   )
  }
 })
+
+/**
+ * Stage budgets. 0 means NO TIMEOUT — for slow local/reasoning models whose
+ * calls legitimately run for many minutes. `AbortSignal.timeout(0)` would
+ * abort instantly, so 0 must yield no signal at all, not a zero-length one.
+ *
+ * The post-reply stages (mind update, off-stage) are genuinely unbounded at 0:
+ * they run after the reply, and the per-chat scheduler already queues the next
+ * turn behind them. The two pre-generation stages (Director, decisions) sit
+ * inside the host's prompt interceptor, whose own timeout is undocumented — at
+ * 0 Psyche stops being what gives up, but the host may still cut the hook off
+ * and send the prompt without Psyche's block.
+ */
+function timeoutSignal(ms: number): AbortSignal | undefined {
+  return ms > 0 ? AbortSignal.timeout(ms) : undefined
+}
+
+/** Like clampInt, but 0 (or anything <= 0) passes through as "disabled". */
+function clampTimeout(v: unknown, min: number, max: number): number {
+  const n = Math.round(Number(v))
+  if (!Number.isFinite(n) || n <= 0) return 0
+  return Math.max(min, Math.min(max, n))
+}
 
 function clampInt(v: unknown, min: number, max: number): number {
   const n = Math.round(Number(v))

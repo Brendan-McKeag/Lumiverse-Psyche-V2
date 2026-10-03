@@ -458,7 +458,10 @@ export async function runDecisionStage(
       // costs the tactic, never the stance already decided above.
       if (!opts.tacticsEnabled) return
       try {
-        const tacticSignal = anySignal(opts.signal, AbortSignal.timeout(opts.tacticTimeoutMs))
+        // 0 = no tactic-specific budget; only the stage's own signal (which
+        // may itself be unbounded) applies.
+        const tacticSignal =
+          opts.tacticTimeoutMs > 0 ? anySignal(opts.signal, AbortSignal.timeout(opts.tacticTimeoutMs)) : opts.signal
         const onCall = (l: JudgeCallLog) => logs.push({ ...l, characterId: c.id })
         const generated = await generateTacticOptions(state, c, r.stance, {
           directive: opts.directive,

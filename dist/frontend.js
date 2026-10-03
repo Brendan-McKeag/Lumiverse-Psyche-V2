@@ -97,6 +97,7 @@ function setup(ctx) {
         <label class="ps-row"><input type="checkbox" class="ps-offscreen" /> Off-stage simulation (absent characters live their own lives — costs extra LLM calls per turn)</label>
         <div><span class="ps-muted">Off-stage scenes per group per turn (1 = one full scene; rarely needs to be higher)</span><input type="number" class="ps-input ps-offbudget" min="1" max="8" /></div>
         <div><span class="ps-muted">Engine rounds per turn</span><input type="number" class="ps-input ps-rounds" min="1" max="20" /></div>
+        <div><span class="ps-muted">Engine timeout (ms) — per post-reply stage (mind update, off-stage sim). <b>0 = no timeout</b></span><input type="number" class="ps-input ps-agent-timeout" min="0" max="1800000" step="1000" /></div>
         <div><span class="ps-muted">Decay rate (0–1, relax toward baseline)</span><input type="number" class="ps-input ps-decay" min="0" max="1" step="0.01" /></div>
         <div><span class="ps-muted">Engine directive (optional) — shared by mind update, off-stage sim, and the Director</span><textarea class="ps-ta ps-dir" placeholder="e.g. Furry internet roleplay; slow-burn; keep characters guarded until trust is earned."></textarea></div>
         <div><span class="ps-muted">Engine model (separate connection for Psyche's bookkeeping)</span><select class="ps-input ps-conn"><option value="">Auto — last-used or default connection</option></select></div>
@@ -133,9 +134,9 @@ function setup(ctx) {
           <div><span class="ps-muted">Model id <span class="ps-jev-model-hint"></span></span><input type="text" class="ps-input ps-jev-model" placeholder="leave blank for the provider's default" /></div>
         </div>
         <div><span class="ps-muted">Stance temperature (0 = always the likeliest stance; 0.7 = human; 1 = straight from the distribution)</span><input type="number" class="ps-input ps-dec-temp" min="0" max="1.5" step="0.05" /></div>
-        <div><span class="ps-muted">Timeout (ms) — the reply goes out without a stance if exceeded</span><input type="number" class="ps-input ps-dec-timeout" min="3000" max="120000" step="1000" /></div>
+        <div><span class="ps-muted">Timeout (ms) — the reply goes out without a stance if exceeded. <b>0 = no timeout</b> (wait as long as the model takes)</span><input type="number" class="ps-input ps-dec-timeout" min="0" max="1800000" step="1000" /></div>
         <label class="ps-row"><input type="checkbox" class="ps-tac-en" /> Tactics — after the stance, the engine model proposes specific ways this character might carry it out and the judge picks one (adds a few seconds before each reply)</label>
-        <div><span class="ps-muted">Tactic timeout (ms) — past this the stance goes out without a "how"</span><input type="number" class="ps-input ps-tac-timeout" min="3000" max="120000" step="1000" /></div>
+        <div><span class="ps-muted">Tactic timeout (ms) — past this the stance goes out without a "how". <b>0 = no timeout</b></span><input type="number" class="ps-input ps-tac-timeout" min="0" max="1800000" step="1000" /></div>
         <div class="ps-row"><button class="ps-btn ps-dec-save">Save settings</button></div>
       </div>
 
@@ -156,7 +157,7 @@ function setup(ctx) {
             <option value="xhigh">X-High</option>
           </select>
         </div>
-        <div><span class="ps-muted">Timeout (ms) — falls back to the unmodified prompt if exceeded</span><input type="number" class="ps-input ps-director-timeout" min="30000" max="600000" step="1000" /></div>
+        <div><span class="ps-muted">Timeout (ms) — falls back to the unmodified prompt if exceeded. <b>0 = no timeout</b>; the host may still cut the interceptor off on its own</span><input type="number" class="ps-input ps-director-timeout" min="0" max="1800000" step="1000" /></div>
         <div class="ps-row"><button class="ps-btn ps-director-save">Save settings</button></div>
       </div>
 
@@ -230,6 +231,7 @@ function setup(ctx) {
   const directorEffortEl = q(".ps-director-effort");
   const directorTimeoutEl = q(".ps-director-timeout");
   const roundsEl = q(".ps-rounds");
+  const agentTimeoutEl = q(".ps-agent-timeout");
   const decayEl = q(".ps-decay");
   const dirEl = q(".ps-dir");
   const connEl = q(".ps-conn");
@@ -446,6 +448,7 @@ ${t.response}`;
       config: {
         enabled: enEl.checked,
         maxRounds: Number(roundsEl.value),
+        agentTimeoutMs: Number(agentTimeoutEl.value),
         decayRate: Number(decayEl.value),
         directive: dirEl.value,
         agentConnectionId: connEl.value,
@@ -524,6 +527,7 @@ ${t.response}`;
         tacEnEl.checked = c.tacticsEnabled !== false;
         tacTimeoutEl.value = String(c.tacticTimeoutMs ?? 20000);
         roundsEl.value = String(c.maxRounds ?? 8);
+        agentTimeoutEl.value = String(c.agentTimeoutMs ?? 90000);
         decayEl.value = String(c.decayRate ?? 0.12);
         dirEl.value = c.directive ?? "";
         agentConnId = c.agentConnectionId ?? "";
