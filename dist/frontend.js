@@ -33,6 +33,9 @@ function setup(ctx) {
     .ps-decision-note { font-size:12px; line-height:1.45; padding:8px 10px; border-left:2px solid #6c8cff; background:var(--lumiverse-fill-subtle); border-radius:var(--lumiverse-radius); }
     .ps-director-note { font-size:12px; line-height:1.45; padding:8px 10px; border-left:2px solid #e0a23c; background:var(--lumiverse-fill-subtle); border-radius:var(--lumiverse-radius); white-space:pre-wrap; }
     .ps-experimental { font-size:11px; line-height:1.4; padding:6px 8px; border-left:2px solid #e5534b; background:var(--lumiverse-fill-subtle); border-radius:var(--lumiverse-radius); }
+    .ps-ref { display:grid; grid-template-columns:1fr auto; gap:2px 8px; align-items:center; padding:6px 8px; background:var(--lumiverse-fill-subtle); border:1px solid var(--lumiverse-border); border-radius:var(--lumiverse-radius); }
+    .ps-ref .t { font-size:12px; font-weight:600; }
+    .ps-ref .p { grid-column:1 / -1; font-size:11px; color:var(--lumiverse-text-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .ps-pre { white-space:pre-wrap; word-break:break-word; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:10.5px; line-height:1.4; max-height:360px; overflow:auto; padding:8px; background:var(--lumiverse-fill-subtle); border:1px solid var(--lumiverse-border); border-radius:var(--lumiverse-radius); }
   `);
   const tab = ctx.ui.registerDrawerTab({
@@ -88,6 +91,25 @@ function setup(ctx) {
           <button class="ps-btn danger ps-reset">Reset run</button>
         </div>
         <div class="ps-muted ps-activity">No activity yet.</div>
+      </div>
+
+      <div class="ps-section">
+        <h4 class="ps-h">References <span class="ps-muted ps-ref-who">— ground truth for this character</span></h4>
+        <div class="ps-muted">Paste or upload reference text (an encyclopedia article, setting notes, a lore bible). Right before
+        each reply the engine model decides what this turn needs looked up, and the matching passages are injected as
+        authoritative facts — so a small prose model doesn't have to know them. A library that fits the budget is injected
+        whole with no extra call. Markdown headings (#, ##) make sharper passages. Shared by every chat with this character.</div>
+        <div class="ps-refs"></div>
+        <input type="text" class="ps-input ps-ref-title" placeholder="Title (optional — defaults to the first line)" />
+        <textarea class="ps-ta ps-ref-text" style="min-height:100px" placeholder="Paste reference text here…"></textarea>
+        <div class="ps-row between">
+          <button class="ps-btn ps-ref-add">Add pasted text</button>
+          <label class="ps-btn">Upload .txt / .md<input type="file" class="ps-ref-file" accept=".txt,.md,.markdown,text/plain,text/markdown" multiple style="display:none" /></label>
+        </div>
+        <label class="ps-row"><input type="checkbox" class="ps-gr-en" /> Enable grounding</label>
+        <div><span class="ps-muted">Reference budget (characters injected per turn)</span><input type="number" class="ps-input ps-gr-budget" min="500" max="60000" step="500" /></div>
+        <div><span class="ps-muted">Lookup timeout (ms) — the reply goes out without references if exceeded. <b>0 = no timeout</b></span><input type="number" class="ps-input ps-gr-timeout" min="0" max="1800000" step="1000" /></div>
+        <div class="ps-row"><button class="ps-btn ps-gr-save">Save settings</button></div>
       </div>
 
       <div class="ps-section">
@@ -166,6 +188,7 @@ function setup(ctx) {
         <div class="ps-row">
           <button class="ps-btn ps-dbg" data-k="update">Mind update</button>
           <button class="ps-btn ps-dbg" data-k="offscreen">Off-stage sim</button>
+          <button class="ps-btn ps-dbg" data-k="grounding">References</button>
           <button class="ps-btn ps-dbg" data-k="decisions">Decisions</button>
           <button class="ps-btn ps-dbg" data-k="director">Director</button>
           <button class="ps-btn ps-dbg" data-k="injection">→ Injected directive</button>
@@ -227,6 +250,14 @@ function setup(ctx) {
   const textureEl = q(".ps-texture");
   const offscreenEl = q(".ps-offscreen");
   const offBudgetEl = q(".ps-offbudget");
+  const refsEl = q(".ps-refs");
+  const refWhoEl = q(".ps-ref-who");
+  const refTitleEl = q(".ps-ref-title");
+  const refTextEl = q(".ps-ref-text");
+  const refFileEl = q(".ps-ref-file");
+  const grEnEl = q(".ps-gr-en");
+  const grBudgetEl = q(".ps-gr-budget");
+  const grTimeoutEl = q(".ps-gr-timeout");
   const directorEnEl = q(".ps-director-en");
   const directorEffortEl = q(".ps-director-effort");
   const directorTimeoutEl = q(".ps-director-timeout");
@@ -386,6 +417,17 @@ ${t.request}
 ${t.response}`;
   }
   const requestDebug = () => ctx.sendToBackend({ type: "get_debug" });
+  const requestRefs = () => ctx.sendToBackend({ type: "get_references" });
+  function renderRefs(characterName, docs) {
+    refWhoEl.textContent = characterName ? `— ground truth for ${characterName}` : "— open a chat to manage its character's references";
+    if (!docs.length) {
+      refsEl.innerHTML = '<div class="ps-muted">No references yet.</div>';
+      return;
+    }
+    const total = docs.reduce((n, d) => n + d.chars, 0);
+    refsEl.innerHTML = docs.map((d) => `<div class="ps-ref"><span class="t">${esc(d.title)}</span>` + `<button class="ps-btn danger ps-ref-del" data-id="${esc(d.id)}">Delete</button>` + `<span class="p">${d.chars.toLocaleString()} chars — ${esc(d.preview)}</span></div>`).join("") + `<div class="ps-muted">${docs.length} doc(s), ${total.toLocaleString()} chars total</div>`;
+    refsEl.querySelectorAll(".ps-ref-del").forEach((b) => b.addEventListener("click", () => ctx.sendToBackend({ type: "delete_reference", id: b.dataset.id })));
+  }
   const requestEngine = () => ctx.sendToBackend({ type: "get_engine" });
   function setEngine(state, stage) {
     const running = state === "running";
@@ -398,10 +440,12 @@ ${t.response}`;
   requestState();
   requestDebug();
   requestEngine();
+  requestRefs();
   tab.onActivate(() => {
     requestState();
     requestDebug();
     requestEngine();
+    requestRefs();
     ctx.sendToBackend({ type: "get_connections" });
   });
   ctx.events.on("CHAT_SWITCHED", () => {
@@ -409,6 +453,7 @@ ${t.response}`;
     requestState();
     requestDebug();
     requestEngine();
+    requestRefs();
   });
   tab.root.querySelectorAll(".ps-dbg").forEach((b) => b.addEventListener("click", () => {
     dbgKey = b.dataset.k;
@@ -431,6 +476,22 @@ ${t.response}`;
     const c = selected();
     if (c)
       ctx.sendToBackend({ type: "save_canon", characterId: c.id, canon: canonEl.value });
+  });
+  q(".ps-ref-add").addEventListener("click", () => {
+    const text = refTextEl.value.trim();
+    if (!text)
+      return;
+    ctx.sendToBackend({ type: "add_reference", title: refTitleEl.value, text });
+    refTitleEl.value = "";
+    refTextEl.value = "";
+  });
+  refFileEl.addEventListener("change", async () => {
+    for (const f of Array.from(refFileEl.files ?? [])) {
+      const text = (await f.text()).trim();
+      if (text)
+        ctx.sendToBackend({ type: "add_reference", title: f.name.replace(/\.(txt|md|markdown)$/i, ""), text });
+    }
+    refFileEl.value = "";
   });
   q(".ps-reset").addEventListener("click", async () => {
     const { confirmed } = await ctx.ui.showConfirm({
@@ -467,13 +528,17 @@ ${t.response}`;
         decisionTemperature: Number(decTempEl.value),
         decisionTimeoutMs: Number(decTimeoutEl.value),
         tacticsEnabled: tacEnEl.checked,
-        tacticTimeoutMs: Number(tacTimeoutEl.value)
+        tacticTimeoutMs: Number(tacTimeoutEl.value),
+        groundingEnabled: grEnEl.checked,
+        groundingCharBudget: Number(grBudgetEl.value),
+        groundingTimeoutMs: Number(grTimeoutEl.value)
       }
     });
   }
   q(".ps-save-cfg").addEventListener("click", saveAllConfig);
   q(".ps-director-save").addEventListener("click", saveAllConfig);
   q(".ps-dec-save").addEventListener("click", saveAllConfig);
+  q(".ps-gr-save").addEventListener("click", saveAllConfig);
   const unsub = ctx.onBackendMessage((raw) => {
     const p = raw;
     switch (p?.type) {
@@ -526,12 +591,19 @@ ${t.response}`;
         decTimeoutEl.value = String(c.decisionTimeoutMs ?? 30000);
         tacEnEl.checked = c.tacticsEnabled !== false;
         tacTimeoutEl.value = String(c.tacticTimeoutMs ?? 20000);
+        grEnEl.checked = c.groundingEnabled !== false;
+        grBudgetEl.value = String(c.groundingCharBudget ?? 6000);
+        grTimeoutEl.value = String(c.groundingTimeoutMs ?? 20000);
         roundsEl.value = String(c.maxRounds ?? 8);
         agentTimeoutEl.value = String(c.agentTimeoutMs ?? 90000);
         decayEl.value = String(c.decayRate ?? 0.12);
         dirEl.value = c.directive ?? "";
         agentConnId = c.agentConnectionId ?? "";
         renderConnections();
+        break;
+      }
+      case "references": {
+        renderRefs(p.characterName ?? null, Array.isArray(p.docs) ? p.docs : []);
         break;
       }
       case "connections": {

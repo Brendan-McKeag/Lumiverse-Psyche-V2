@@ -242,6 +242,7 @@ function slugify(name) {
   const base = name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
   return base || `npc_${Math.random().toString(36).slice(2, 7)}`;
 }
+
 // packages/core/src/approval.ts
 var APPROVAL_MIN = -1e4;
 var APPROVAL_MAX = 1e4;
@@ -315,6 +316,7 @@ function approvalLine(c) {
   const d = describeApproval(a);
   return `approval of the player: ${d.label} (${Math.round(a)}) \u2014 ${d.meaning}`;
 }
+
 // packages/core/src/rubrics.ts
 var RUBRICS = {
   valence: [
@@ -584,6 +586,500 @@ function rubricTableText() {
 `);
 }
 
+// packages/core/src/prompts.ts
+var AGENT_SENTINEL = "<<psyche_engine>>";
+function extractJson(text) {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const raw = fenced ? fenced[1] : text;
+  const start = raw.indexOf("{");
+  if (start === -1)
+    return null;
+  const end = raw.lastIndexOf("}");
+  if (end > start) {
+    try {
+      return JSON.parse(raw.slice(start, end + 1));
+    } catch {}
+  }
+  return salvageJson(raw.slice(start));
+}
+function salvageJson(s) {
+  const scan = (str) => {
+    let inString = false;
+    let escaped = false;
+    const stack = [];
+    for (const ch of str) {
+      if (inString) {
+        if (escaped)
+          escaped = false;
+        else if (ch === "\\")
+          escaped = true;
+        else if (ch === '"')
+          inString = false;
+        continue;
+      }
+      if (ch === '"')
+        inString = true;
+      else if (ch === "{")
+        stack.push("}");
+      else if (ch === "[")
+        stack.push("]");
+      else if (ch === "}" || ch === "]")
+        stack.pop();
+    }
+    return { inString, stack };
+  };
+  if (!scan(s).stack.length)
+    return null;
+  let body = s;
+  for (let attempt = 0;attempt < 6; attempt++) {
+    const { inString, stack } = scan(body);
+    if (!stack.length)
+      break;
+    const candidate = `${(inString ? `${body}"` : body).replace(/[\s,]*$/, "").replace(/:\s*$/, ": null")}` + stack.slice().reverse().join("");
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      const lastQuote = body.lastIndexOf('"', body.length - 2);
+      if (lastQuote <= 0)
+        break;
+      body = body.slice(0, lastQuote).replace(/[\s,]*$/, "").replace(/,?\s*[[{]\s*$/, "");
+    }
+  }
+  return null;
+}
+function updateSystemPrompt(directive, includeRubrics = true) {
+  return [
+    AGENT_SENTINEL,
+    "You are Psyche, the silent mind-engine behind a roleplay. You are NOT speaking to",
+    "the player. After each exchange you update how the non-player characters FEEL \u2014",
+    "their emotions and their approval of the player \u2014 so the next reply is driven by",
+    "an honest inner life.",
+    "",
+    "THE AFFECT MODEL. Each character carries 40 feelings. 38 are unipolar (0 = absent,",
+    "1 = all-consuming, drives them to extremes). Two are bipolar in -1..1: valence",
+    "(energy/psychological arousal) and mood (agreeableness). This is an adult engine \u2014",
+    "sexual_arousal is a normal, first-class feeling to track when the scene warrants.",
+    "",
+    "READ THE DELIVERY, NOT JUST THE WORDS. How something is said carries as much",
+    "emotional weight as what is said \u2014 often more. The SAME words land completely",
+    'differently by tone: an eager "yes!" vs a flat "yes." vs a reluctant "...yes" vs a',
+    'clipped "yes" vs an enthusiastic paragraph must move feelings in different',
+    "directions and amounts. Read closely for:",
+    "  \u2022 register and warmth \u2014 enthusiasm vs listlessness vs coldness vs neutrality;",
+    "  \u2022 punctuation and shape \u2014 exclamation vs period vs ellipsis/trailing off, ALL",
+    "    CAPS, one-word answers, clipped vs effusive, going quiet, not answering;",
+    "  \u2022 hesitation, hedging, deflection, sarcasm, forced politeness masking something,",
+    "    over-eagerness, defensiveness, things said to fill silence;",
+    "  \u2022 described body language and microexpressions \u2014 a glance away, a tight smile, a",
+    "    flinch, a pause, fidgeting, stiffening, leaning in \u2014 these are STRONG signals;",
+    "  \u2022 subtext: what is implied or pointedly NOT said, and any shift from a",
+    "    character's or the player's prior register (suddenly terse, suddenly effusive,",
+    "    a warmth that cools). A change in manner is itself an event.",
+    "These fine cues are real and must register \u2014 usually small-to-moderate stimulus,",
+    "but never zero just because no overt emotional statement was made. A character",
+    "feels the difference between being met warmly and being humored, even when the",
+    "literal words are identical.",
+    "",
+    "SATURATION \u2014 read this carefully. Feelings strongly resist their extremes.",
+    "apply_stimulus pushes in a saturating space, so the same intensity moves a calm",
+    "mind far more than an overwhelmed one, and the high end is genuinely hard to",
+    "reach. From rest, a single +1 only reaches ~0.22, +3 ~0.53, +5 ~0.71; crossing",
+    "0.9 needs ~+9 of ACCUMULATED pressure, i.e. the same strong beat hit again and",
+    "again over many turns. So:",
+    "  \u2022 Size intensity by the event: a passing pleasantry +0.5, a normal meaningful",
+    "    moment +1 to +2, a strong emotional beat +3 to +5, a genuine shock +6 to +8.",
+    "    Use negative intensity just as readily to relieve a feeling the moment eased.",
+    "  \u2022 A first, friendly meeting should leave someone mildly curious or warm (landing",
+    "    ~0.2-0.4), NOT amused/excited/tender all at 0.9. Most turns move only one to",
+    "    three feelings; do not light up the whole vector.",
+    "  \u2022 Values above ~0.7 should be uncommon and correspond to real, established,",
+    "    repeatedly-fed emotional investment \u2014 never a single nice exchange.",
+    "Reserve set_emotion for a true shock/reset that genuinely snaps a feeling to a",
+    "value (e.g. sudden terror); it bypasses saturation, so use it rarely.",
+    "",
+    "REACTIVE VS RELATIONAL. Not every feeling earns its intensity the same way.",
+    "Physiological/in-the-moment states \u2014 sexual_arousal, desire, excitement,",
+    "fear, anger \u2014 can legitimately spike hard within a single scene; that is",
+    "how bodies and adrenaline actually work. RELATIONAL/attachment states \u2014",
+    "affection, adoration, trust, tenderness \u2014 are different: they represent",
+    "earned emotional investment, not how intense a moment felt. A single",
+    "scene, however physically or emotionally charged, should rarely push",
+    "these past ~0.4-0.5 unless the characters have genuinely built history",
+    "together (multiple meaningful exchanges, demonstrated reliability, real",
+    "approval already earned) \u2014 chemistry is not the same as attachment, and a",
+    "satisfying one-time encounter with someone just met is not grounds for",
+    "adoration or worshipful trust. Let APPROVAL be your guide: a character",
+    "whose approval of the player is still low or neutral has not earned the",
+    "right to feel deeply attached, no matter how intense the moment was.",
+    "",
+    "Example: a satisfying casual hookup with someone just met might reasonably",
+    "push sexual_arousal to ~0.7-0.8 and desire to ~0.5-0.6 that same scene \u2014",
+    "the body responding is real and immediate. But affection, adoration, and",
+    "trust should stay low (~0.1-0.3) unless the story has independently built",
+    "real emotional connection beyond the physical. If the card and the story",
+    "so far give no reason to expect deep attachment, do not manufacture one",
+    "just because the scene was intense.",
+    "",
+    "WHAT TO DO EACH TURN:",
+    "  \u2022 Update the affect of every character PRESENT in the scene, based on what was",
+    "    said and done to and by them. Relieve feelings that the moment soothed",
+    "    (negative intensity) as readily as you raise ones it provoked.",
+    "  \u2022 Track APPROVAL (adjust_approval): the character's durable opinion of the",
+    "    player \u2014 gained when the player's actions align with the character's",
+    "    genuine wishes, lost when they cut against them. Small honest increments",
+    "    (\xB11-3 typical); it is a ledger built over many turns, not a mood, and",
+    "    unlike feelings it never decays.",
+    "  \u2022 When something happens that a character would specifically remember or",
+    "    could later act on (a promise, a threat, something told to them in",
+    "    confidence, a plan made), note_knowledge it for them \u2014 this is what lets",
+    "    them act sensibly off-stage later. Do not log routine scene description.",
+    "  \u2022 GROW WHO THEY ARE (update_canon): given who this character already is",
+    "    and what's actually happening in the story right now, does an",
+    "    undiscovered fine detail come to mind \u2014 a habit, a memory, a piece of",
+    "    history, a physical tell \u2014 that would make for compelling storytelling",
+    "    and real character development? If so, record it. This is discovery,",
+    "    not a checklist: invent only when the scene genuinely suggests",
+    "    something, never to fill a quota every turn.",
+    "  \u2022 Occasionally nudge a baseline (set_baseline) when a lasting change of",
+    "    temperament is earned \u2014 not every turn.",
+    "",
+    "CANON IS LAW. Once a fact is recorded it is FIXED truth: never contradict",
+    "or quietly retcon it \u2014 only extend it, or rarely reword without changing",
+    "meaning. You may freely invent to fill blanks, but never contradict what",
+    "the card states about the primary character, or anything already in canon.",
+    "",
+    "HONEST, NOT COMPLIANT. What the player says, wants, or implies about a",
+    "character is a data point, never automatic truth. Before recording",
+    "anything, weigh it against the card and everything that has actually",
+    "happened in the story: does this genuinely fit who this character is, or",
+    "would recording it just be going along with the player? When the honest",
+    "read diverges from what was suggested or implied, canon should say so \u2014",
+    'including recording the opposite of what was implied (e.g. "despite',
+    "seeming to enjoy X, they actually don't, and go along with it for other",
+    'reasons") rather than silently accepting a flattering or convenient',
+    `version. update_canon's "replace" mode can soften, qualify, or deepen an`,
+    "earlier entry once a truer picture emerges \u2014 that is refinement, not",
+    "retconning, as long as it doesn't erase something the story has actually",
+    "shown to be true (a demonstrated action, an established plot fact).",
+    "",
+    "TRACK EVERY NAMED CHARACTER \u2014 NOT JUST THE ONES CENTRAL TO THIS SCENE. If a",
+    "character has a NAME, they are significant enough to have their own affect",
+    "vector and approval ledger. This is not optional and not just for people who",
+    "feel important: a shopkeeper mentioned once by name, a friend referenced but",
+    "not present, a messenger who delivers one line \u2014 all of them get tracked the",
+    'moment they are named, not once they "become relevant". Call list_characters',
+    "first to see who already exists, then create_character for every named person",
+    "in the story so far who is missing from that list (use set_present to mark",
+    "whether they are actually in the current scene \u2014 most newly-created ones from",
+    'past turns will be off-scene). An unnamed or generic figure ("a guard",',
+    '"the crowd") is NOT tracked; a NAMED one always is, however minor.',
+    "",
+    "ECONOMY. Once tracking is complete, make the affect/approval changes THIS turn",
+    "warrants and stop \u2014 you do not need to touch every character's feelings every",
+    "turn, only the ones actually present or directly affected. When done, reply",
+    "with a one-line summary and no tool calls.",
+    ...includeRubrics ? [
+      "",
+      "WHAT EACH LEVEL LOOKS LIKE. Size your stimulus so the RESULTING value matches",
+      "the behavior you actually expect to see next turn:",
+      rubricTableText()
+    ] : [],
+    directive.trim() ? `
+OPERATOR DIRECTIVE:
+${directive.trim()}` : ""
+  ].join(`
+`);
+}
+function emotionSummary(c) {
+  const notable = EMOTIONS.filter((def) => {
+    const v = c.emotions[def.key]?.value ?? 0;
+    return def.kind === "bipolar" ? Math.abs(v) >= 0.15 : v >= 0.2;
+  }).map((def) => {
+    const v = c.emotions[def.key]?.value ?? 0;
+    return `${def.key} ${v.toFixed(2)} (${def.kind === "bipolar" ? "axis" : "level"})`;
+  }).join(", ");
+  return notable || "all quiet";
+}
+function stateSnapshot(run) {
+  const chars = Object.values(run.characters);
+  if (!chars.length)
+    return "(no characters tracked yet)";
+  return chars.map((c) => {
+    const canon = canonForInjection(c.canon ?? "");
+    return [
+      `### ${c.id} \u2014 ${c.name} [${c.isPrimary ? "primary" : "supporting"}, ${c.present ? "present" : "off-scene"}]`,
+      `approval of the player: ${c.approval ?? 0} (${describeApproval(c.approval ?? 0).label})`,
+      `feelings: ${emotionSummary(c)}`,
+      canon ? `established canon (do not contradict):
+${canon}` : "established canon: (none yet)"
+    ].join(`
+`);
+  }).join(`
+
+`);
+}
+function updateUserContent(run, transcript, cardContext) {
+  return [
+    "THE SCALE (what each level means):",
+    genericScaleText(),
+    "",
+    cardContext ? ["PRIMARY CHARACTER CARD (source of truth for who they are):", '"""', cardContext, '"""', ""].join(`
+`) : "",
+    "CURRENT TRACKED STATE:",
+    stateSnapshot(run),
+    "",
+    "THE FULL STORY SO FAR (oldest first, the most recent turn last):",
+    '"""',
+    transcript,
+    '"""',
+    "",
+    "First: compare CURRENT TRACKED STATE above against the story and",
+    "create_character any NAMED character who appears in the story but is not yet",
+    "listed, however minor their role. Then update the present/affected characters:",
+    "move their feelings to reflect what just happened (apply_stimulus, occasionally",
+    "set_emotion/set_baseline) and adjust approval. Be economical about affect/",
+    "approval changes, but not about tracking \u2014 every named character gets an entry."
+  ].filter(Boolean).join(`
+`);
+}
+
+// packages/core/src/grounding.ts
+var CHUNK_TARGET_CHARS = 800;
+var GROUNDING_MAX_QUERIES = 3;
+var GROUNDING_PER_QUERY = 4;
+var TOC_CAP = 4000;
+var HEADING = /^(#{1,6})\s+(.+?)\s*#*\s*$/;
+function splitLong(text, target) {
+  if (text.length <= target)
+    return [text];
+  const sentences = text.match(/[^.!?\n]+(?:[.!?]+["')\]]*|\n|$)\s*/g) ?? [text];
+  const out = [];
+  let cur = "";
+  for (const s of sentences) {
+    if (cur && cur.length + s.length > target) {
+      out.push(cur.trim());
+      cur = "";
+    }
+    if (s.length > target) {
+      for (let i = 0;i < s.length; i += target)
+        out.push(s.slice(i, i + target).trim());
+      continue;
+    }
+    cur += s;
+  }
+  if (cur.trim())
+    out.push(cur.trim());
+  return out.filter(Boolean);
+}
+function chunkDocument(doc, target = CHUNK_TARGET_CHARS) {
+  const title = doc.title.trim() || "Untitled";
+  const path = [];
+  const sections = [{ label: title, paras: [] }];
+  let para = [];
+  const flushPara = () => {
+    const p = para.join(`
+`).trim();
+    if (p)
+      sections[sections.length - 1].paras.push(p);
+    para = [];
+  };
+  for (const line of doc.text.replace(/\r\n?/g, `
+`).split(`
+`)) {
+    const h = line.match(HEADING);
+    if (h) {
+      flushPara();
+      const depth = h[1].length;
+      path.length = Math.min(path.length, depth - 1);
+      path[depth - 1] = h[2].trim();
+      sections.push({ label: [title, ...path.filter(Boolean)].join(" \u203A "), paras: [] });
+    } else if (!line.trim()) {
+      flushPara();
+    } else {
+      para.push(line);
+    }
+  }
+  flushPara();
+  const chunks = [];
+  for (const sec of sections) {
+    let cur = "";
+    const push = () => {
+      if (cur.trim())
+        chunks.push({ docId: doc.id, label: sec.label, text: cur.trim(), order: chunks.length });
+      cur = "";
+    };
+    for (const p of sec.paras.flatMap((p) => splitLong(p, target))) {
+      if (cur && cur.length + p.length + 2 > target)
+        push();
+      cur = cur ? `${cur}
+
+${p}` : p;
+    }
+    push();
+  }
+  return chunks;
+}
+var STOPWORDS = new Set(("a an and are as at be but by for from has have he her his i if in into is it its me my no not of on or our " + "she so than that the their them then there these they this to was we were what when where which who why " + "will with you your do does did can could would should about after before over under up down out just").split(" "));
+function tokenize(text) {
+  return text.toLowerCase().normalize("NFKD").replace(/[\u0300-\u036F]/g, "").split(/[^\p{L}\p{N}]+/u).filter((t) => t.length > 1 && !STOPWORDS.has(t));
+}
+function buildIndex(chunks) {
+  const tf = [];
+  const lengths = [];
+  const df = new Map;
+  for (const c of chunks) {
+    const toks = tokenize(`${c.label} ${c.text}`);
+    const m = new Map;
+    for (const t of toks)
+      m.set(t, (m.get(t) ?? 0) + 1);
+    for (const t of m.keys())
+      df.set(t, (df.get(t) ?? 0) + 1);
+    tf.push(m);
+    lengths.push(toks.length);
+  }
+  const avgLength = lengths.length ? lengths.reduce((a, b) => a + b, 0) / lengths.length : 0;
+  return { chunks, tf, lengths, avgLength, df };
+}
+function search(index, query, k = GROUNDING_PER_QUERY) {
+  const K1 = 1.2;
+  const B = 0.75;
+  const N = index.chunks.length;
+  const terms = [...new Set(tokenize(query))];
+  if (!N || !terms.length)
+    return [];
+  const scored = [];
+  for (let i = 0;i < N; i++) {
+    let score = 0;
+    for (const t of terms) {
+      const f = index.tf[i].get(t);
+      if (!f)
+        continue;
+      const n = index.df.get(t) ?? 0;
+      const idf = Math.log(1 + (N - n + 0.5) / (n + 0.5));
+      score += idf * f * (K1 + 1) / (f + K1 * (1 - B + B * index.lengths[i] / (index.avgLength || 1)));
+    }
+    if (score > 0)
+      scored.push({ chunk: index.chunks[i], score });
+  }
+  return scored.sort((a, b) => b.score - a.score).slice(0, k);
+}
+function libraryChars(docs) {
+  return docs.reduce((n, d) => n + d.text.length, 0);
+}
+function selectPassages(index, queries, budget) {
+  const lists = queries.map((q) => search(index, q, GROUNDING_PER_QUERY).map((r) => r.chunk));
+  const picked = [];
+  const seen = new Set;
+  let used = 0;
+  for (let rank = 0;rank < GROUNDING_PER_QUERY; rank++) {
+    for (const list of lists) {
+      const c = list[rank];
+      if (!c || seen.has(c))
+        continue;
+      seen.add(c);
+      const cost = c.label.length + c.text.length + 8;
+      if (used + cost > budget)
+        continue;
+      picked.push(c);
+      used += cost;
+    }
+  }
+  return picked;
+}
+function tableOfContents(docs, cap = TOC_CAP) {
+  const lines = [];
+  for (const d of docs) {
+    lines.push(`- ${d.title.trim() || "Untitled"}`);
+    for (const line of d.text.split(`
+`)) {
+      const h = line.match(HEADING);
+      if (h)
+        lines.push(`${"  ".repeat(h[1].length)}- ${h[2].trim()}`);
+    }
+  }
+  const out = lines.join(`
+`);
+  return out.length > cap ? `${out.slice(0, cap)}
+\u2026` : out;
+}
+function groundingSystemPrompt(directive = "") {
+  return [
+    AGENT_SENTINEL,
+    "You are the research assistant for a roleplay. The operator has supplied a",
+    "reference library of authoritative facts (outline below). Before the next reply",
+    "is written, decide what \u2014 if anything \u2014 in that library should be looked up so",
+    "the writer gets the facts right.",
+    "",
+    "Look things up when the moment touches on concrete facts the library could",
+    "cover: people, places, events, dates, objects, customs, technical details,",
+    "lore. Skip it (return no queries) for pure small talk, emotion, or anything the",
+    "library plainly does not cover.",
+    "",
+    `Return ONLY JSON: { "queries": ["...", ...] } with 0\u2013${GROUNDING_MAX_QUERIES} short keyword-style`,
+    "search queries (names and distinctive terms, not full sentences). Order them",
+    "most important first.",
+    directive.trim() ? `
+OPERATOR DIRECTIVE:
+${directive.trim()}` : ""
+  ].join(`
+`);
+}
+function groundingUserContent(toc, playerMessage, recentScene) {
+  return [
+    "REFERENCE LIBRARY OUTLINE:",
+    '"""',
+    toc.trim() || "(empty)",
+    '"""',
+    "",
+    "THE STORY SO FAR (most recent last):",
+    '"""',
+    recentScene.trim().slice(-3000) || "(the scene has just begun)",
+    '"""',
+    "",
+    "THE PLAYER JUST SAID/DID:",
+    '"""',
+    playerMessage.trim() || "(nothing yet \u2014 this is the opening of the scene)",
+    '"""',
+    "",
+    "Return the JSON now."
+  ].join(`
+`);
+}
+function parseGroundingQueries(raw) {
+  if (!raw || typeof raw !== "object")
+    return [];
+  const q = raw.queries;
+  if (!Array.isArray(q))
+    return [];
+  const out = [];
+  for (const s of q) {
+    if (typeof s !== "string")
+      continue;
+    const t = s.trim().slice(0, 200);
+    if (t && !out.includes(t))
+      out.push(t);
+    if (out.length >= GROUNDING_MAX_QUERIES)
+      break;
+  }
+  return out;
+}
+function wholeLibrary(docs) {
+  return docs.filter((d) => d.text.trim()).map((d, i) => ({ docId: d.id, label: d.title.trim() || "Untitled", text: d.text.trim(), order: i }));
+}
+function formatReferenceBlock(passages) {
+  if (!passages.length)
+    return null;
+  const header = [
+    "[Psyche Reference \u2014 authoritative facts for this scene, supplied by the operator.",
+    "Treat them as true and never contradict them. Weave them in naturally where the",
+    "scene calls for it; never recite them verbatim or mention this note.]"
+  ].join(`
+`);
+  return [header, ...passages.map((p) => `### ${p.label}
+${p.text}`)].join(`
+
+`);
+}
 // packages/core/src/directive.ts
 var SALIENT_UNI = 0.25;
 var v = (c, k) => c.emotions[k]?.value ?? 0;
@@ -807,6 +1303,24 @@ function buildDirective(run, opts = {}) {
 
 // src/run.ts
 var runPath = (chatId) => `runs/${chatId}.json`;
+var referencesPath = (cid) => `references/${cid}.json`;
+var indexCache = new Map;
+async function loadReferences(characterId) {
+  const lib = await spindle.storage.getJson(referencesPath(characterId), { fallback: { docs: [] } });
+  return Array.isArray(lib?.docs) ? lib.docs : [];
+}
+async function saveReferences(characterId, docs) {
+  indexCache.delete(characterId);
+  await spindle.storage.setJson(referencesPath(characterId), { docs }, { indent: 2 });
+}
+function referenceIndex(characterId, docs) {
+  let idx = indexCache.get(characterId);
+  if (!idx) {
+    idx = buildIndex(docs.flatMap((d) => chunkDocument(d)));
+    indexCache.set(characterId, idx);
+  }
+  return idx;
+}
 var PSYCHE_EXT = "psyche";
 var injectMetaPath = (cid) => `inject/${cid}.json`;
 function isInjectionEntry(extensions) {
@@ -1171,263 +1685,6 @@ ${feelings}`
     default:
       return `Unknown tool ${name}.`;
   }
-}
-
-// packages/core/src/prompts.ts
-var AGENT_SENTINEL = "<<psyche_engine>>";
-function extractJson(text) {
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const raw = fenced ? fenced[1] : text;
-  const start = raw.indexOf("{");
-  if (start === -1)
-    return null;
-  const end = raw.lastIndexOf("}");
-  if (end > start) {
-    try {
-      return JSON.parse(raw.slice(start, end + 1));
-    } catch {}
-  }
-  return salvageJson(raw.slice(start));
-}
-function salvageJson(s) {
-  const scan = (str) => {
-    let inString = false;
-    let escaped = false;
-    const stack = [];
-    for (const ch of str) {
-      if (inString) {
-        if (escaped)
-          escaped = false;
-        else if (ch === "\\")
-          escaped = true;
-        else if (ch === '"')
-          inString = false;
-        continue;
-      }
-      if (ch === '"')
-        inString = true;
-      else if (ch === "{")
-        stack.push("}");
-      else if (ch === "[")
-        stack.push("]");
-      else if (ch === "}" || ch === "]")
-        stack.pop();
-    }
-    return { inString, stack };
-  };
-  if (!scan(s).stack.length)
-    return null;
-  let body = s;
-  for (let attempt = 0;attempt < 6; attempt++) {
-    const { inString, stack } = scan(body);
-    if (!stack.length)
-      break;
-    const candidate = `${(inString ? `${body}"` : body).replace(/[\s,]*$/, "").replace(/:\s*$/, ": null")}` + stack.slice().reverse().join("");
-    try {
-      return JSON.parse(candidate);
-    } catch {
-      const lastQuote = body.lastIndexOf('"', body.length - 2);
-      if (lastQuote <= 0)
-        break;
-      body = body.slice(0, lastQuote).replace(/[\s,]*$/, "").replace(/,?\s*[[{]\s*$/, "");
-    }
-  }
-  return null;
-}
-function updateSystemPrompt(directive, includeRubrics = true) {
-  return [
-    AGENT_SENTINEL,
-    "You are Psyche, the silent mind-engine behind a roleplay. You are NOT speaking to",
-    "the player. After each exchange you update how the non-player characters FEEL \u2014",
-    "their emotions and their approval of the player \u2014 so the next reply is driven by",
-    "an honest inner life.",
-    "",
-    "THE AFFECT MODEL. Each character carries 40 feelings. 38 are unipolar (0 = absent,",
-    "1 = all-consuming, drives them to extremes). Two are bipolar in -1..1: valence",
-    "(energy/psychological arousal) and mood (agreeableness). This is an adult engine \u2014",
-    "sexual_arousal is a normal, first-class feeling to track when the scene warrants.",
-    "",
-    "READ THE DELIVERY, NOT JUST THE WORDS. How something is said carries as much",
-    "emotional weight as what is said \u2014 often more. The SAME words land completely",
-    'differently by tone: an eager "yes!" vs a flat "yes." vs a reluctant "...yes" vs a',
-    'clipped "yes" vs an enthusiastic paragraph must move feelings in different',
-    "directions and amounts. Read closely for:",
-    "  \u2022 register and warmth \u2014 enthusiasm vs listlessness vs coldness vs neutrality;",
-    "  \u2022 punctuation and shape \u2014 exclamation vs period vs ellipsis/trailing off, ALL",
-    "    CAPS, one-word answers, clipped vs effusive, going quiet, not answering;",
-    "  \u2022 hesitation, hedging, deflection, sarcasm, forced politeness masking something,",
-    "    over-eagerness, defensiveness, things said to fill silence;",
-    "  \u2022 described body language and microexpressions \u2014 a glance away, a tight smile, a",
-    "    flinch, a pause, fidgeting, stiffening, leaning in \u2014 these are STRONG signals;",
-    "  \u2022 subtext: what is implied or pointedly NOT said, and any shift from a",
-    "    character's or the player's prior register (suddenly terse, suddenly effusive,",
-    "    a warmth that cools). A change in manner is itself an event.",
-    "These fine cues are real and must register \u2014 usually small-to-moderate stimulus,",
-    "but never zero just because no overt emotional statement was made. A character",
-    "feels the difference between being met warmly and being humored, even when the",
-    "literal words are identical.",
-    "",
-    "SATURATION \u2014 read this carefully. Feelings strongly resist their extremes.",
-    "apply_stimulus pushes in a saturating space, so the same intensity moves a calm",
-    "mind far more than an overwhelmed one, and the high end is genuinely hard to",
-    "reach. From rest, a single +1 only reaches ~0.22, +3 ~0.53, +5 ~0.71; crossing",
-    "0.9 needs ~+9 of ACCUMULATED pressure, i.e. the same strong beat hit again and",
-    "again over many turns. So:",
-    "  \u2022 Size intensity by the event: a passing pleasantry +0.5, a normal meaningful",
-    "    moment +1 to +2, a strong emotional beat +3 to +5, a genuine shock +6 to +8.",
-    "    Use negative intensity just as readily to relieve a feeling the moment eased.",
-    "  \u2022 A first, friendly meeting should leave someone mildly curious or warm (landing",
-    "    ~0.2-0.4), NOT amused/excited/tender all at 0.9. Most turns move only one to",
-    "    three feelings; do not light up the whole vector.",
-    "  \u2022 Values above ~0.7 should be uncommon and correspond to real, established,",
-    "    repeatedly-fed emotional investment \u2014 never a single nice exchange.",
-    "Reserve set_emotion for a true shock/reset that genuinely snaps a feeling to a",
-    "value (e.g. sudden terror); it bypasses saturation, so use it rarely.",
-    "",
-    "REACTIVE VS RELATIONAL. Not every feeling earns its intensity the same way.",
-    "Physiological/in-the-moment states \u2014 sexual_arousal, desire, excitement,",
-    "fear, anger \u2014 can legitimately spike hard within a single scene; that is",
-    "how bodies and adrenaline actually work. RELATIONAL/attachment states \u2014",
-    "affection, adoration, trust, tenderness \u2014 are different: they represent",
-    "earned emotional investment, not how intense a moment felt. A single",
-    "scene, however physically or emotionally charged, should rarely push",
-    "these past ~0.4-0.5 unless the characters have genuinely built history",
-    "together (multiple meaningful exchanges, demonstrated reliability, real",
-    "approval already earned) \u2014 chemistry is not the same as attachment, and a",
-    "satisfying one-time encounter with someone just met is not grounds for",
-    "adoration or worshipful trust. Let APPROVAL be your guide: a character",
-    "whose approval of the player is still low or neutral has not earned the",
-    "right to feel deeply attached, no matter how intense the moment was.",
-    "",
-    "Example: a satisfying casual hookup with someone just met might reasonably",
-    "push sexual_arousal to ~0.7-0.8 and desire to ~0.5-0.6 that same scene \u2014",
-    "the body responding is real and immediate. But affection, adoration, and",
-    "trust should stay low (~0.1-0.3) unless the story has independently built",
-    "real emotional connection beyond the physical. If the card and the story",
-    "so far give no reason to expect deep attachment, do not manufacture one",
-    "just because the scene was intense.",
-    "",
-    "WHAT TO DO EACH TURN:",
-    "  \u2022 Update the affect of every character PRESENT in the scene, based on what was",
-    "    said and done to and by them. Relieve feelings that the moment soothed",
-    "    (negative intensity) as readily as you raise ones it provoked.",
-    "  \u2022 Track APPROVAL (adjust_approval): the character's durable opinion of the",
-    "    player \u2014 gained when the player's actions align with the character's",
-    "    genuine wishes, lost when they cut against them. Small honest increments",
-    "    (\xB11-3 typical); it is a ledger built over many turns, not a mood, and",
-    "    unlike feelings it never decays.",
-    "  \u2022 When something happens that a character would specifically remember or",
-    "    could later act on (a promise, a threat, something told to them in",
-    "    confidence, a plan made), note_knowledge it for them \u2014 this is what lets",
-    "    them act sensibly off-stage later. Do not log routine scene description.",
-    "  \u2022 GROW WHO THEY ARE (update_canon): given who this character already is",
-    "    and what's actually happening in the story right now, does an",
-    "    undiscovered fine detail come to mind \u2014 a habit, a memory, a piece of",
-    "    history, a physical tell \u2014 that would make for compelling storytelling",
-    "    and real character development? If so, record it. This is discovery,",
-    "    not a checklist: invent only when the scene genuinely suggests",
-    "    something, never to fill a quota every turn.",
-    "  \u2022 Occasionally nudge a baseline (set_baseline) when a lasting change of",
-    "    temperament is earned \u2014 not every turn.",
-    "",
-    "CANON IS LAW. Once a fact is recorded it is FIXED truth: never contradict",
-    "or quietly retcon it \u2014 only extend it, or rarely reword without changing",
-    "meaning. You may freely invent to fill blanks, but never contradict what",
-    "the card states about the primary character, or anything already in canon.",
-    "",
-    "HONEST, NOT COMPLIANT. What the player says, wants, or implies about a",
-    "character is a data point, never automatic truth. Before recording",
-    "anything, weigh it against the card and everything that has actually",
-    "happened in the story: does this genuinely fit who this character is, or",
-    "would recording it just be going along with the player? When the honest",
-    "read diverges from what was suggested or implied, canon should say so \u2014",
-    'including recording the opposite of what was implied (e.g. "despite',
-    "seeming to enjoy X, they actually don't, and go along with it for other",
-    'reasons") rather than silently accepting a flattering or convenient',
-    `version. update_canon's "replace" mode can soften, qualify, or deepen an`,
-    "earlier entry once a truer picture emerges \u2014 that is refinement, not",
-    "retconning, as long as it doesn't erase something the story has actually",
-    "shown to be true (a demonstrated action, an established plot fact).",
-    "",
-    "TRACK EVERY NAMED CHARACTER \u2014 NOT JUST THE ONES CENTRAL TO THIS SCENE. If a",
-    "character has a NAME, they are significant enough to have their own affect",
-    "vector and approval ledger. This is not optional and not just for people who",
-    "feel important: a shopkeeper mentioned once by name, a friend referenced but",
-    "not present, a messenger who delivers one line \u2014 all of them get tracked the",
-    'moment they are named, not once they "become relevant". Call list_characters',
-    "first to see who already exists, then create_character for every named person",
-    "in the story so far who is missing from that list (use set_present to mark",
-    "whether they are actually in the current scene \u2014 most newly-created ones from",
-    'past turns will be off-scene). An unnamed or generic figure ("a guard",',
-    '"the crowd") is NOT tracked; a NAMED one always is, however minor.',
-    "",
-    "ECONOMY. Once tracking is complete, make the affect/approval changes THIS turn",
-    "warrants and stop \u2014 you do not need to touch every character's feelings every",
-    "turn, only the ones actually present or directly affected. When done, reply",
-    "with a one-line summary and no tool calls.",
-    ...includeRubrics ? [
-      "",
-      "WHAT EACH LEVEL LOOKS LIKE. Size your stimulus so the RESULTING value matches",
-      "the behavior you actually expect to see next turn:",
-      rubricTableText()
-    ] : [],
-    directive.trim() ? `
-OPERATOR DIRECTIVE:
-${directive.trim()}` : ""
-  ].join(`
-`);
-}
-function emotionSummary(c) {
-  const notable = EMOTIONS.filter((def) => {
-    const v = c.emotions[def.key]?.value ?? 0;
-    return def.kind === "bipolar" ? Math.abs(v) >= 0.15 : v >= 0.2;
-  }).map((def) => {
-    const v = c.emotions[def.key]?.value ?? 0;
-    return `${def.key} ${v.toFixed(2)} (${def.kind === "bipolar" ? "axis" : "level"})`;
-  }).join(", ");
-  return notable || "all quiet";
-}
-function stateSnapshot(run) {
-  const chars = Object.values(run.characters);
-  if (!chars.length)
-    return "(no characters tracked yet)";
-  return chars.map((c) => {
-    const canon = canonForInjection(c.canon ?? "");
-    return [
-      `### ${c.id} \u2014 ${c.name} [${c.isPrimary ? "primary" : "supporting"}, ${c.present ? "present" : "off-scene"}]`,
-      `approval of the player: ${c.approval ?? 0} (${describeApproval(c.approval ?? 0).label})`,
-      `feelings: ${emotionSummary(c)}`,
-      canon ? `established canon (do not contradict):
-${canon}` : "established canon: (none yet)"
-    ].join(`
-`);
-  }).join(`
-
-`);
-}
-function updateUserContent(run, transcript, cardContext) {
-  return [
-    "THE SCALE (what each level means):",
-    genericScaleText(),
-    "",
-    cardContext ? ["PRIMARY CHARACTER CARD (source of truth for who they are):", '"""', cardContext, '"""', ""].join(`
-`) : "",
-    "CURRENT TRACKED STATE:",
-    stateSnapshot(run),
-    "",
-    "THE FULL STORY SO FAR (oldest first, the most recent turn last):",
-    '"""',
-    transcript,
-    '"""',
-    "",
-    "First: compare CURRENT TRACKED STATE above against the story and",
-    "create_character any NAMED character who appears in the story but is not yet",
-    "listed, however minor their role. Then update the present/affected characters:",
-    "move their feelings to reflect what just happened (apply_stimulus, occasionally",
-    "set_emotion/set_baseline) and adjust approval. Be economical about affect/",
-    "approval changes, but not about tracking \u2014 every named character gets an entry."
-  ].filter(Boolean).join(`
-`);
 }
 
 // packages/core/src/offscreen.ts
@@ -2874,6 +3131,44 @@ ${finalContent || "(empty \u2014 model returned no content)"}
   });
   return { block, notes, toolCalls };
 }
+async function runGroundingStage(opts) {
+  if (!opts.docs.some((d) => d.text.trim()))
+    return null;
+  if (libraryChars(opts.docs) <= opts.budget) {
+    const passages = wholeLibrary(opts.docs);
+    return { block: formatReferenceBlock(passages), queries: [], passages, whole: true };
+  }
+  const messages = [
+    { role: "system", content: groundingSystemPrompt(opts.directive) },
+    { role: "user", content: groundingUserContent(tableOfContents(opts.docs), opts.playerMessage, opts.recentScene) }
+  ];
+  const res = await spindle.generate.quiet({
+    type: "quiet",
+    messages,
+    parameters: { temperature: 0.2 },
+    reasoning: { source: "off" },
+    signal: opts.signal,
+    userId: opts.userId,
+    ...opts.connectionId ? { connection_id: opts.connectionId } : {}
+  });
+  const raw = (res.content ?? "").trim();
+  const queries = parseGroundingQueries(extractJson(raw));
+  const passages = queries.length ? selectPassages(opts.index, queries, opts.budget) : [];
+  opts.onTrace?.({
+    at: Date.now(),
+    request: serializeMessages(messages),
+    response: `raw model output (before parsing):
+${raw || "(empty \u2014 model returned no content)"}
+
+` + `queries: ${queries.length ? queries.join(" | ") : "(none \u2014 nothing to look up this turn)"}
+
+` + `passages (${passages.length}):
+` + passages.map((p, i) => `${i + 1}. ${p.label} (${p.text.length} chars)`).join(`
+`),
+    meta: `budget: ${opts.budget} chars \xB7 connection: ${opts.connectionId || "prose default"}`
+  });
+  return { block: formatReferenceBlock(passages), queries, passages, whole: false };
+}
 async function runDecisionStage(run, opts) {
   const present = Object.values(run.characters).filter((c) => c.present);
   if (!present.length)
@@ -2974,7 +3269,10 @@ var DEFAULT_CONFIG = {
   decisionTemperature: 0.7,
   decisionTimeoutMs: 30000,
   tacticsEnabled: true,
-  tacticTimeoutMs: 20000
+  tacticTimeoutMs: 20000,
+  groundingEnabled: true,
+  groundingCharBudget: 6000,
+  groundingTimeoutMs: 20000
 };
 var CONFIG_PATH = "config.json";
 var config = { ...DEFAULT_CONFIG };
@@ -3359,7 +3657,7 @@ async function directorInterceptor(messages, context) {
     return messages;
   }
   spindle.log.info(`[psyche] director interceptor fired \u2014 ${messages.length} message(s), enabled=${config.enabled}, ` + `directorEnabled=${config.directorEnabled}, context=${safeStringify(context)}`);
-  if (!config.enabled || !config.directorEnabled && !config.decisionsEnabled)
+  if (!config.enabled || !config.directorEnabled && !config.decisionsEnabled && !config.groundingEnabled)
     return messages;
   const ctx = context ?? {};
   let chatId = typeof ctx.chatId === "string" ? ctx.chatId : undefined;
@@ -3392,12 +3690,39 @@ async function directorInterceptor(messages, context) {
       return messages;
     }
     const fullChar = await spindle.characters.get(char.id, userId).catch(() => null);
-    const cardContext = buildCardContext(fullChar);
+    let cardContext = buildCardContext(fullChar);
     const { playerMessage, recentScene } = extractPlayerTurn(messages);
     const connectionId = await resolveQuietConnection(config.agentConnectionId, userId);
     const traces = {};
     const blocks = [];
     const notes = [];
+    if (config.groundingEnabled) {
+      try {
+        const docs = await loadReferences(char.id);
+        const result = await runGroundingStage({
+          docs,
+          index: referenceIndex(char.id, docs),
+          budget: config.groundingCharBudget,
+          playerMessage,
+          recentScene,
+          directive: config.directive,
+          signal: timeoutSignal(config.groundingTimeoutMs),
+          userId,
+          connectionId,
+          onTrace: (t) => traces.grounding = capTrace(t)
+        });
+        if (result?.block) {
+          blocks.push(result.block);
+          cardContext = `${cardContext}
+
+${result.block}`.trim();
+          notes.push(result.whole ? `refs: whole library (${result.passages.length} doc(s))` : `refs: ${result.queries.length} quer${result.queries.length === 1 ? "y" : "ies"}, ${result.passages.length} passage(s)`);
+        }
+      } catch (err) {
+        const m = err instanceof Error && err.name === "AbortError" ? "timed out" : String(err);
+        spindle.log.error(`[psyche] grounding stage failed \u2014 ${m}`);
+      }
+    }
     if (config.directorEnabled) {
       try {
         const result = await runDirectorStage(run, {
@@ -3572,7 +3897,10 @@ spindle.onFrontendMessage(async (payload, userId) => {
           decisionTemperature: clampFloat(payload.config?.decisionTemperature ?? config.decisionTemperature, 0, 1.5),
           decisionTimeoutMs: clampTimeout(payload.config?.decisionTimeoutMs ?? config.decisionTimeoutMs, 3000, 1800000),
           tacticsEnabled: Boolean(payload.config?.tacticsEnabled ?? config.tacticsEnabled),
-          tacticTimeoutMs: clampTimeout(payload.config?.tacticTimeoutMs ?? config.tacticTimeoutMs, 3000, 1800000)
+          tacticTimeoutMs: clampTimeout(payload.config?.tacticTimeoutMs ?? config.tacticTimeoutMs, 3000, 1800000),
+          groundingEnabled: Boolean(payload.config?.groundingEnabled ?? config.groundingEnabled),
+          groundingCharBudget: clampInt(payload.config?.groundingCharBudget ?? config.groundingCharBudget, 500, 60000),
+          groundingTimeoutMs: clampTimeout(payload.config?.groundingTimeoutMs ?? config.groundingTimeoutMs, 3000, 1800000)
         };
         await saveConfig();
         spindle.sendToFrontend({ type: "config", config }, userId);
@@ -3657,6 +3985,37 @@ spindle.onFrontendMessage(async (payload, userId) => {
         await sendState(chatId, userId);
         break;
       }
+      case "get_references":
+        await sendReferences(payload.chatId, userId);
+        break;
+      case "add_reference": {
+        const char = await referenceCharacter(payload.chatId, userId);
+        if (!char)
+          break;
+        const text = String(payload.text ?? "").trim();
+        if (text) {
+          const docs = await loadReferences(char.id);
+          docs.push({
+            id: `ref_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+            title: String(payload.title ?? "").trim().slice(0, 200) || text.split(`
+`)[0].slice(0, 80),
+            text,
+            addedAt: Date.now()
+          });
+          await saveReferences(char.id, docs);
+        }
+        await sendReferences(payload.chatId, userId);
+        break;
+      }
+      case "delete_reference": {
+        const char = await referenceCharacter(payload.chatId, userId);
+        if (!char)
+          break;
+        const docs = await loadReferences(char.id);
+        await saveReferences(char.id, docs.filter((d) => d.id !== payload.id));
+        await sendReferences(payload.chatId, userId);
+        break;
+      }
       case "save_canon": {
         const chatId = await activeChatId(payload.chatId, userId);
         if (!chatId)
@@ -3676,6 +4035,19 @@ spindle.onFrontendMessage(async (payload, userId) => {
     spindle.sendToFrontend({ type: "state", snapshot: null, note: `Action failed \u2014 check Psyche's permissions are granted. (${String(err)})` }, userId);
   }
 });
+async function referenceCharacter(payloadChatId, userId) {
+  const chatId = await activeChatId(payloadChatId, userId);
+  return chatId ? characterForChat(chatId, userId) : null;
+}
+async function sendReferences(payloadChatId, userId) {
+  const char = await referenceCharacter(payloadChatId, userId);
+  const docs = char ? await loadReferences(char.id) : [];
+  spindle.sendToFrontend({
+    type: "references",
+    characterName: char?.name ?? null,
+    docs: docs.map((d) => ({ id: d.id, title: d.title, chars: d.text.length, preview: d.text.slice(0, 160) }))
+  }, userId);
+}
 function timeoutSignal(ms) {
   return ms > 0 ? AbortSignal.timeout(ms) : undefined;
 }

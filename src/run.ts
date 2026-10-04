@@ -1,5 +1,7 @@
 declare const spindle: import('lumiverse-spindle-types').SpindleAPI
 
+import { chunkDocument, buildIndex, type ReferenceDoc, type Bm25Index } from '@psyche/core/grounding'
+
 /* ------------------------------------------------------------------ *
  * Psyche (core fork) — plugin-side run glue
  *
@@ -14,6 +16,40 @@ export * from '@psyche/core/approval'
 export * from '@psyche/core/directive'
 
 export const runPath = (chatId: string) => `runs/${chatId}.json`
+
+/* ------------------------ reference library ------------------------ */
+/*
+ * Per-character grounding sources (see @psyche/core/grounding). The docs are
+ * stored as plain text; the chunked BM25 index is rebuilt in memory on first
+ * use and cached until the library changes.
+ */
+
+export const referencesPath = (cid: string) => `references/${cid}.json`
+
+interface ReferenceLibrary {
+  docs: ReferenceDoc[]
+}
+
+const indexCache = new Map<string, Bm25Index>()
+
+export async function loadReferences(characterId: string): Promise<ReferenceDoc[]> {
+  const lib = await spindle.storage.getJson<ReferenceLibrary>(referencesPath(characterId), { fallback: { docs: [] } })
+  return Array.isArray(lib?.docs) ? lib.docs : []
+}
+
+export async function saveReferences(characterId: string, docs: ReferenceDoc[]): Promise<void> {
+  indexCache.delete(characterId)
+  await spindle.storage.setJson(referencesPath(characterId), { docs }, { indent: 2 })
+}
+
+export function referenceIndex(characterId: string, docs: ReferenceDoc[]): Bm25Index {
+  let idx = indexCache.get(characterId)
+  if (!idx) {
+    idx = buildIndex(docs.flatMap((d) => chunkDocument(d)))
+    indexCache.set(characterId, idx)
+  }
+  return idx
+}
 
 /* ------------------- injection-entry provisioning ------------------ */
 /*

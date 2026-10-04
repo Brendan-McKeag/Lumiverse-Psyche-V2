@@ -45,6 +45,19 @@ import {
   type ResolvedTactic,
 } from '@psyche/core/tactics'
 import type { StoredTactic } from '@psyche/core/decisions'
+import {
+  groundingSystemPrompt,
+  groundingUserContent,
+  parseGroundingQueries,
+  tableOfContents,
+  selectPassages,
+  wholeLibrary,
+  libraryChars,
+  formatReferenceBlock,
+  type ReferenceDoc,
+  type Bm25Index,
+  type Chunk,
+} from '@psyche/core/grounding'
 
 /* ------------------------------------------------------------------ *
  * Psyche (core fork) — the mind engine (plugin transport)
@@ -388,6 +401,73 @@ export async function runDirectorStage(
   })
 
   return { block, notes, toolCalls }
+}
+
+/* ---------------------------- the grounding stage ----------------------- *
+ * Pre-generation, first of the three: a per-character reference library the
+ * operator supplied. A library small enough to fit the budget is injected
+ * whole with no model call; otherwise one cheap planner call names what this
+ * turn needs looked up and BM25 pulls the passages. Every failure is "no
+ * references this turn", never a lost reply.
+ * ------------------------------------------------------------------ */
+
+export interface GroundingStageResult {
+  block: string | null
+  queries: string[]
+  passages: Chunk[]
+  /** true when the whole library fit and the planner was skipped */
+  whole: boolean
+}
+
+export async function runGroundingStage(opts: {
+  docs: ReferenceDoc[]
+  index: Bm25Index
+  budget: number
+  playerMessage: string
+  recentScene: string
+  directive?: string
+  signal?: AbortSignal
+  userId?: string
+  connectionId?: string
+  onTrace?: TraceFn
+}): Promise<GroundingStageResult | null> {
+  if (!opts.docs.some((d) => d.text.trim())) return null
+
+  if (libraryChars(opts.docs) <= opts.budget) {
+    const passages = wholeLibrary(opts.docs)
+    return { block: formatReferenceBlock(passages), queries: [], passages, whole: true }
+  }
+
+  const messages: LlmMessage[] = [
+    { role: 'system', content: groundingSystemPrompt(opts.directive) },
+    { role: 'user', content: groundingUserContent(tableOfContents(opts.docs), opts.playerMessage, opts.recentScene) },
+  ]
+  const res = (await spindle.generate.quiet({
+    type: 'quiet',
+    messages,
+    parameters: { temperature: 0.2 },
+    reasoning: { source: 'off' },
+    signal: opts.signal,
+    userId: opts.userId,
+    ...(opts.connectionId ? { connection_id: opts.connectionId } : {}),
+  })) as { content?: string }
+
+  const raw = (res.content ?? '').trim()
+  const queries = parseGroundingQueries(extractJson(raw))
+  const passages = queries.length ? selectPassages(opts.index, queries, opts.budget) : []
+
+  opts.onTrace?.({
+    at: Date.now(),
+    request: serializeMessages(messages),
+    response:
+      `raw model output (before parsing):\n${raw || '(empty — model returned no content)'}\n\n` +
+      `queries: ${queries.length ? queries.join(' | ') : '(none — nothing to look up this turn)'}\n\n` +
+      `passages (${passages.length}):\n` +
+      passages.map((p, i) => `${i + 1}. ${p.label} (${p.text.length} chars)`).join('\n'),
+    meta: `budget: ${opts.budget} chars · connection: ${opts.connectionId || 'prose default'}`,
+  })
+
+  return { block: formatReferenceBlock(passages), queries, passages, whole: false }
 }
 
 /* ---------------------------- the decision stage ------------------------ *

@@ -11,11 +11,14 @@ import {
   buildDirective,
   ensureInjectionEntry,
   isInjectionEntry,
+  loadReferences,
+  saveReferences,
+  referenceIndex,
   describeApproval,
   APPROVAL_MIN,
   APPROVAL_MAX,
 } from './run'
-import { runPsycheAgent, runOffscreenStage, runDirectorStage, runDecisionStage, AGENT_SENTINEL, StageTrace } from './agent'
+import { runPsycheAgent, runOffscreenStage, runDirectorStage, runDecisionStage, runGroundingStage, AGENT_SENTINEL, StageTrace } from './agent'
 import type { JudgeBackend } from './judge'
 import { resolveDecisionProvider, isDecisionProvider, type DecisionProvider } from '@psyche/core/decisions'
 import { EMOTIONS, EMOTION_BY_KEY, describeValue, relaxToward } from '@psyche/core/affect'
@@ -92,6 +95,17 @@ interface Config {
   tacticsEnabled: boolean
   /** 0 = no timeout */
   tacticTimeoutMs: number
+  /**
+   * Grounding: right before each reply, look up the primary character's
+   * reference library (operator-supplied text) and inject the passages this
+   * turn needs as authoritative facts. One cheap planner call, skipped when
+   * the library is empty or small enough to inject whole.
+   */
+  groundingEnabled: boolean
+  /** max characters of reference text injected per turn */
+  groundingCharBudget: number
+  /** 0 = no timeout */
+  groundingTimeoutMs: number
 }
 
 const DEFAULT_CONFIG: Config = {
@@ -117,6 +131,9 @@ const DEFAULT_CONFIG: Config = {
   decisionTimeoutMs: 30000,
   tacticsEnabled: true,
   tacticTimeoutMs: 20000,
+  groundingEnabled: true,
+  groundingCharBudget: 6000,
+  groundingTimeoutMs: 20000,
 }
 const CONFIG_PATH = 'config.json'
 
@@ -582,7 +599,7 @@ async function directorInterceptor(messages: LlmMessage[], context: unknown): Pr
     `[psyche] director interceptor fired — ${messages.length} message(s), enabled=${config.enabled}, ` +
       `directorEnabled=${config.directorEnabled}, context=${safeStringify(context)}`,
   )
-  if (!config.enabled || (!config.directorEnabled && !config.decisionsEnabled)) return messages
+  if (!config.enabled || (!config.directorEnabled && !config.decisionsEnabled && !config.groundingEnabled)) return messages
 
   // `context`'s real shape isn't in the type declarations; the sibling
   // world-info interceptor's context carries chatId/characterId/userId, so
@@ -626,13 +643,46 @@ async function directorInterceptor(messages: LlmMessage[], context: unknown): Pr
     }
 
     const fullChar = await spindle.characters.get(char.id, userId).catch(() => null)
-    const cardContext = buildCardContext(fullChar)
+    let cardContext = buildCardContext(fullChar)
     const { playerMessage, recentScene } = extractPlayerTurn(messages)
     const connectionId = await resolveQuietConnection(config.agentConnectionId, userId)
 
     const traces: Record<string, StageTrace> = {}
     const blocks: string[] = []
     const notes: string[] = []
+
+    // ── grounding (operator's reference library, cheap) ────────────────
+    // First, so its block sits furthest from the player's message and the
+    // Director/decision layer below can reason from the same facts.
+    if (config.groundingEnabled) {
+      try {
+        const docs = await loadReferences(char.id)
+        const result = await runGroundingStage({
+          docs,
+          index: referenceIndex(char.id, docs),
+          budget: config.groundingCharBudget,
+          playerMessage,
+          recentScene,
+          directive: config.directive,
+          signal: timeoutSignal(config.groundingTimeoutMs),
+          userId,
+          connectionId,
+          onTrace: (t) => (traces.grounding = capTrace(t)),
+        })
+        if (result?.block) {
+          blocks.push(result.block)
+          cardContext = `${cardContext}\n\n${result.block}`.trim()
+          notes.push(
+            result.whole
+              ? `refs: whole library (${result.passages.length} doc(s))`
+              : `refs: ${result.queries.length} quer${result.queries.length === 1 ? 'y' : 'ies'}, ${result.passages.length} passage(s)`,
+          )
+        }
+      } catch (err) {
+        const m = err instanceof Error && err.name === 'AbortError' ? 'timed out' : String(err)
+        spindle.log.error(`[psyche] grounding stage failed — ${m}`)
+      }
+    }
 
     // ── the Director (heavy, optional) ─────────────────────────────────
     if (config.directorEnabled) {
@@ -831,6 +881,9 @@ spindle.onFrontendMessage(async (payload: any, userId) => {
         decisionTimeoutMs: clampTimeout(payload.config?.decisionTimeoutMs ?? config.decisionTimeoutMs, 3000, 1800000),
         tacticsEnabled: Boolean(payload.config?.tacticsEnabled ?? config.tacticsEnabled),
         tacticTimeoutMs: clampTimeout(payload.config?.tacticTimeoutMs ?? config.tacticTimeoutMs, 3000, 1800000),
+        groundingEnabled: Boolean(payload.config?.groundingEnabled ?? config.groundingEnabled),
+        groundingCharBudget: clampInt(payload.config?.groundingCharBudget ?? config.groundingCharBudget, 500, 60000),
+        groundingTimeoutMs: clampTimeout(payload.config?.groundingTimeoutMs ?? config.groundingTimeoutMs, 3000, 1800000),
       }
       await saveConfig()
       spindle.sendToFrontend({ type: 'config', config }, userId)
@@ -919,6 +972,37 @@ spindle.onFrontendMessage(async (payload: any, userId) => {
       break
     }
 
+    case 'get_references':
+      await sendReferences(payload.chatId, userId)
+      break
+
+    case 'add_reference': {
+      const char = await referenceCharacter(payload.chatId, userId)
+      if (!char) break
+      const text = String(payload.text ?? '').trim()
+      if (text) {
+        const docs = await loadReferences(char.id)
+        docs.push({
+          id: `ref_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+          title: String(payload.title ?? '').trim().slice(0, 200) || text.split('\n')[0].slice(0, 80),
+          text,
+          addedAt: Date.now(),
+        })
+        await saveReferences(char.id, docs)
+      }
+      await sendReferences(payload.chatId, userId)
+      break
+    }
+
+    case 'delete_reference': {
+      const char = await referenceCharacter(payload.chatId, userId)
+      if (!char) break
+      const docs = await loadReferences(char.id)
+      await saveReferences(char.id, docs.filter((d) => d.id !== payload.id))
+      await sendReferences(payload.chatId, userId)
+      break
+    }
+
     case 'save_canon': {
       const chatId = await activeChatId(payload.chatId, userId)
       if (!chatId) break
@@ -940,6 +1024,24 @@ spindle.onFrontendMessage(async (payload: any, userId) => {
   )
  }
 })
+
+async function referenceCharacter(payloadChatId: string | undefined, userId?: string) {
+  const chatId = await activeChatId(payloadChatId, userId)
+  return chatId ? characterForChat(chatId, userId) : null
+}
+
+async function sendReferences(payloadChatId: string | undefined, userId?: string) {
+  const char = await referenceCharacter(payloadChatId, userId)
+  const docs = char ? await loadReferences(char.id) : []
+  spindle.sendToFrontend(
+    {
+      type: 'references',
+      characterName: char?.name ?? null,
+      docs: docs.map((d) => ({ id: d.id, title: d.title, chars: d.text.length, preview: d.text.slice(0, 160) })),
+    },
+    userId,
+  )
+}
 
 /**
  * Stage budgets. 0 means NO TIMEOUT — for slow local/reasoning models whose
